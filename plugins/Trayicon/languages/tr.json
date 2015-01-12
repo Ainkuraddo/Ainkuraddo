@@ -1,0 +1,14 @@
+{
+	"Ainkuraddo Twitter": "Ainkuraddo Twitter",
+	"Ainkuraddo Reddit": "Ainkuraddo Reddit",
+	"Ainkuraddo Github": "Ainkuraddo Github",
+	"Report bug/request feature": "Hata bildir/geliştirme taleb et",
+	"!Open Ainkuraddo": "!Ainkuraddo'i Aç",
+	"Quit": "Kapat",
+	"(active)": "(aktif)",
+	"(passive)": "(pasif)",
+	"Connections: %s": "Bağlantı sayısı: %s",
+	"Received: %.2f MB | Sent: %.2f MB": "Gelen: %.2f MB | Gönderilen: %.2f MB",
+	"Show console window": "Konsolu aç",
+	"Start Ainkuraddo when Windows starts": "Ainkuraddo'i açılışta otomatik başlat"
+}

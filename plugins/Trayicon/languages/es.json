@@ -1,0 +1,14 @@
+{
+	"Ainkuraddo Twitter": "Ainkuraddo Twitter",
+	"Ainkuraddo Reddit": "Ainkuraddo Reddit",
+	"Ainkuraddo Github": "Ainkuraddo Github",
+	"Report bug/request feature": "Reportar fallo/sugerir característica",
+	"!Open Ainkuraddo": "!Abrir Ainkuraddo",
+	"Quit": "Sair",
+	"(active)": "(activo)",
+	"(passive)": "(pasivo)",
+	"Connections: %s": "Conecciones: %s",   
+	"Received: %.2f MB | Sent: %.2f MB": "Recibido: %.2f MB | Enviado: %.2f MB",
+	"Show console window": "Mostrar consola",
+	"Start Ainkuraddo when Windows starts": "Iniciar Ainkuraddo cuando inicie Windows"
+}
