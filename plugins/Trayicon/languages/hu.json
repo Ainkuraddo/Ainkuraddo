@@ -1,0 +1,14 @@
+{
+	"Ainkuraddo Twitter": "Ainkuraddo Twitter",
+	"Ainkuraddo Reddit": "Ainkuraddo Reddit",
+	"Ainkuraddo Github": "Ainkuraddo Github",
+	"Report bug/request feature": "Hiba bejelentés/ötletek",
+	"!Open Ainkuraddo": "!Ainkuraddo megnyitása",
+	"Quit": "Kilépés",
+	"(active)": "(aktív)",
+	"(passive)": "(passive)",
+	"Connections: %s": "Kapcsolatok: %s",
+	"Received: %.2f MB | Sent: %.2f MB": "Fogadott: %.2f MB | Küldött: %.2f MB",
+	"Show console window": "Parancssor mutatása",
+	"Start Ainkuraddo when Windows starts": "Ainkuraddo indítása a Windows-al együtt"
+}
