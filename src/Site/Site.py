@@ -7,6 +7,7 @@ import random
 import sys
 import hashlib
 import collections
+import base64
 
 import gevent
 import gevent.pool
@@ -17,14 +18,14 @@ from Peer import Peer
 from Worker import WorkerManager
 from Debug import Debug
 from Content import ContentManager
-from SiteStorage import SiteStorage
+from .SiteStorage import SiteStorage
 from Crypt import CryptHash
 from util import helper
 from util import Diff
 from Plugin import PluginManager
 from File import FileServer
-from SiteAnnouncer import SiteAnnouncer
-import SiteManager
+from .SiteAnnouncer import SiteAnnouncer
+from . import SiteManager
 
 
 @PluginManager.acceptPlugins
@@ -32,7 +33,8 @@ class Site(object):
 
     def __init__(self, address, allow_create=True, settings=None):
         self.address = str(re.sub("[^A-Za-z0-9]", "", address))  # Make sure its correct address
-        self.address_hash = hashlib.sha256(self.address).digest()
+        self.address_hash = hashlib.sha256(self.address.encode("ascii")).digest()
+        self.address_sha1 = hashlib.sha1(self.address.encode("ascii")).digest()
         self.address_short = "%s..%s" % (self.address[:6], self.address[-4:])  # Short address for logging
         self.log = logging.getLogger("Site:%s" % self.address_short)
         self.addEventListeners()
@@ -53,14 +55,15 @@ class Site(object):
         self.storage = SiteStorage(self, allow_create=allow_create)  # Save and load site files
         self.content_manager = ContentManager(self)
         self.content_manager.loadContents()  # Load content.json files
-        if "main" in sys.modules and "file_server" in dir(sys.modules["main"]):  # Use global file server by default if possible
-            self.connection_server = sys.modules["main"].file_server
-        else:
-            if "main" in sys.modules:
-                sys.modules["main"].file_server = FileServer()
-                self.connection_server = sys.modules["main"].file_server
+        if "main" in sys.modules:  # import main has side-effects, breaks tests
+            import main
+            if "file_server" in dir(main):  # Use global file server by default if possible
+                self.connection_server = main.file_server
             else:
-                self.connection_server = FileServer()
+                main.file_server = FileServer()
+                self.connection_server = main.file_server
+        else:
+            self.connection_server = FileServer()
 
         self.announcer = SiteAnnouncer(self)  # Announce and get peer list from other nodes
 
@@ -90,7 +93,7 @@ class Site(object):
             self.settings = settings
             if "cache" not in settings:
                 settings["cache"] = {}
-            if "size_optional" not in settings:
+            if "size_files_optional" not in settings:
                 settings["size_optional"] = 0
             if "optional_downloaded" not in settings:
                 settings["optional_downloaded"] = 0
@@ -110,7 +113,7 @@ class Site(object):
                 self.settings["autodownloadoptional"] = True
 
         # Add admin permissions to homepage
-        if self.address == config.homepage and "ADMIN" not in self.settings["permissions"]:
+        if self.address in (config.homepage, config.updatesite) and "ADMIN" not in self.settings["permissions"]:
             self.settings["permissions"].append("ADMIN")
 
         return
@@ -124,10 +127,16 @@ class Site(object):
             SiteManager.site_manager.load(False)
         SiteManager.site_manager.save()
 
+    def isServing(self):
+        if config.offline:
+            return False
+        else:
+            return self.settings["serving"]
+
     def getSettingsCache(self):
         back = {}
         back["bad_files"] = self.bad_files
-        back["hashfield"] = self.content_manager.hashfield.tostring().encode("base64")
+        back["hashfield"] = base64.b64encode(self.content_manager.hashfield.tobytes()).decode("ascii")
         return back
 
     # Max site size in MB
@@ -173,7 +182,7 @@ class Site(object):
         # Start download files
         file_threads = []
         if download_files:
-            for file_relative_path in self.content_manager.contents[inner_path].get("files", {}).keys():
+            for file_relative_path in list(self.content_manager.contents[inner_path].get("files", {}).keys()):
                 file_inner_path = content_inner_dir + file_relative_path
 
                 # Try to diff first
@@ -204,7 +213,7 @@ class Site(object):
                                 "Patched successfully: %s (diff: %.3fs, verify: %.3fs, write: %.3fs, on_done: %.3fs)" %
                                 (file_inner_path, time_diff, time_verify, time_write, time_on_done)
                             )
-                    except Exception, err:
+                    except Exception as err:
                         self.log.debug("Failed to patch %s: %s" % (file_inner_path, err))
                         diff_success = False
 
@@ -218,7 +227,7 @@ class Site(object):
             if inner_path == "content.json":
                 gevent.spawn(self.updateHashfield)
 
-            for file_relative_path in self.content_manager.contents[inner_path].get("files_optional", {}).keys():
+            for file_relative_path in list(self.content_manager.contents[inner_path].get("files_optional", {}).keys()):
                 file_inner_path = content_inner_dir + file_relative_path
                 if file_inner_path not in changed and not self.bad_files.get(file_inner_path):
                     continue
@@ -233,7 +242,7 @@ class Site(object):
 
         # Wait for includes download
         include_threads = []
-        for file_relative_path in self.content_manager.contents[inner_path].get("includes", {}).keys():
+        for file_relative_path in list(self.content_manager.contents[inner_path].get("includes", {}).keys()):
             file_inner_path = content_inner_dir + file_relative_path
             include_thread = gevent.spawn(self.downloadContent, file_inner_path, download_files=download_files, peer=peer)
             include_threads.append(include_thread)
@@ -262,7 +271,7 @@ class Site(object):
     def getReachableBadFiles(self):
         if not self.bad_files:
             return False
-        return [bad_file for bad_file, retry in self.bad_files.iteritems() if retry < 3]
+        return [bad_file for bad_file, retry in self.bad_files.items() if retry < 3]
 
     # Retry download bad files
     def retryBadFiles(self, force=False):
@@ -272,7 +281,7 @@ class Site(object):
         content_inner_paths = []
         file_inner_paths = []
 
-        for bad_file, tries in self.bad_files.items():
+        for bad_file, tries in list(self.bad_files.items()):
             if force or random.randint(0, min(40, tries)) < 4:  # Larger number tries = less likely to check every 15min
                 if bad_file.endswith("content.json"):
                     content_inner_paths.append(bad_file)
@@ -286,7 +295,7 @@ class Site(object):
             self.pooledDownloadFile(file_inner_paths, only_if_bad=True)
 
     def checkBadFiles(self):
-        for bad_file in self.bad_files.keys():
+        for bad_file in list(self.bad_files.keys()):
             file_info = self.content_manager.getFileInfo(bad_file)
             if bad_file.endswith("content.json"):
                 if file_info is False and bad_file != "content.json":
@@ -374,7 +383,7 @@ class Site(object):
             queried.append(peer)
             modified_contents = []
             my_modified = self.content_manager.listModified(since)
-            for inner_path, modified in res["modified_files"].iteritems():  # Check if the peer has newer files than we
+            for inner_path, modified in res["modified_files"].items():  # Check if the peer has newer files than we
                 has_newer = int(modified) > my_modified.get(inner_path, 0)
                 has_older = int(modified) < my_modified.get(inner_path, 0)
                 if inner_path not in self.bad_files and not self.content_manager.isArchived(inner_path, modified):
@@ -444,6 +453,13 @@ class Site(object):
     def update(self, announce=False, check_files=False, since=None):
         self.content_manager.loadContent("content.json", load_includes=False)  # Reload content.json
         self.content_updated = None  # Reset content updated time
+
+        if check_files:
+            self.storage.updateBadFiles(quick_check=True)  # Quick check and mark bad files based on file size
+
+        if not self.isServing():
+            return False
+
         self.updateWebsocket(updating=True)
 
         # Remove files that no longer in content.json
@@ -457,9 +473,6 @@ class Site(object):
             self.bad_files = {}
 
         queried = self.checkModifications(since)
-
-        if check_files:
-            self.storage.updateBadFiles(quick_check=True)  # Quick check and mark bad files based on file size
 
         changed, deleted = self.content_manager.loadContent("content.json", load_includes=False)
 
@@ -480,7 +493,7 @@ class Site(object):
     def redownloadContents(self):
         # Download all content.json again
         content_threads = []
-        for inner_path in self.content_manager.contents.keys():
+        for inner_path in list(self.content_manager.contents.keys()):
             content_threads.append(self.needFile(inner_path, update=True, blocking=False))
 
         self.log.debug("Waiting %s content.json to finish..." % len(content_threads))
@@ -515,15 +528,10 @@ class Site(object):
             for retry in range(2):
                 try:
                     with gevent.Timeout(timeout, False):
-                        result = peer.request("update", {
-                            "site": self.address,
-                            "inner_path": inner_path,
-                            "body": body,
-                            "diffs": diffs
-                        })
+                        result = peer.publish(self.address, inner_path, body, content_json_modified, diffs)
                     if result:
                         break
-                except Exception, err:
+                except Exception as err:
                     self.log.error("Publish error: %s" % Debug.formatException(err))
                     result = {"exception": Debug.formatException(err)}
 
@@ -563,7 +571,7 @@ class Site(object):
         peers = set(peers)
 
         self.log.info("Publishing %s to %s/%s peers (connected: %s) diffs: %s (%.2fk)..." % (
-            inner_path, limit, len(self.peers), num_connected_peers, diffs.keys(), float(len(str(diffs))) / 1024
+            inner_path, limit, len(self.peers), num_connected_peers, list(diffs.keys()), float(len(str(diffs))) / 1024
         ))
 
         if not peers:
@@ -631,8 +639,8 @@ class Site(object):
             )
 
         # Copy files
-        for content_inner_path, content in self.content_manager.contents.items():
-            file_relative_paths = content.get("files", {}).keys()
+        for content_inner_path, content in list(self.content_manager.contents.items()):
+            file_relative_paths = list(content.get("files", {}).keys())
 
             # Sign content.json at the end to make sure every file is included
             file_relative_paths.sort()
@@ -733,7 +741,7 @@ class Site(object):
     def needFile(self, inner_path, update=False, blocking=True, peer=None, priority=0):
         if self.storage.isFile(inner_path) and not update:  # File exist, no need to do anything
             return True
-        elif self.settings["serving"] is False:  # Site not serving
+        elif not self.isServing():  # Site not serving
             return False
         else:  # Wait until file downloaded
             self.bad_files[inner_path] = self.bad_files.get(inner_path, 0) + 1  # Mark as bad file
@@ -812,7 +820,7 @@ class Site(object):
         self.log.debug("Need connections: %s, Current: %s, Total: %s" % (need, connected, len(self.peers)))
 
         if connected < need:  # Need more than we have
-            for peer in self.peers.values():
+            for peer in list(self.peers.values()):
                 if not peer.connection or not peer.connection.connected:  # No peer connection or disconnected
                     peer.pex()  # Initiate peer exchange
                     if peer.connection and peer.connection.connected:
@@ -831,7 +839,7 @@ class Site(object):
 
     # Return: Probably peers verified to be connectable recently
     def getConnectablePeers(self, need_num=5, ignore=[], allow_private=True):
-        peers = self.peers.values()
+        peers = list(self.peers.values())
         found = []
         for peer in peers:
             if peer.key.endswith(":0"):
@@ -874,7 +882,7 @@ class Site(object):
         # Add random peers
         need_more = need_num - len(found)
         found_more = sorted(
-            self.peers.values()[0:need_more * 50],
+            list(self.peers.values())[0:need_more * 50],
             key=lambda peer: peer.reputation,
             reverse=True
         )[0:need_more * 2]
@@ -906,7 +914,7 @@ class Site(object):
 
     # Cleanup probably dead peers and close connection if too much
     def cleanupPeers(self, peers_protected=[]):
-        peers = self.peers.values()
+        peers = list(self.peers.values())
         if len(peers) > 20:
             # Cleanup old peers
             removed = 0
@@ -999,7 +1007,7 @@ class Site(object):
         self.worker_manager.running = False
         self.worker_manager.stopWorkers()
         self.storage.deleteFiles()
-        self.updateWebsocket()
+        self.updateWebsocket(deleted=True)
         self.content_manager.contents.db.deleteSite(self)
         SiteManager.site_manager.delete(self.address)
 
@@ -1019,7 +1027,7 @@ class Site(object):
     # Send site status update to websocket clients
     def updateWebsocket(self, **kwargs):
         if kwargs:
-            param = {"event": kwargs.items()[0]}
+            param = {"event": list(kwargs.items())[0]}
         else:
             param = None
         for ws in self.websockets:

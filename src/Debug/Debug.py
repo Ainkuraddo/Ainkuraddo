@@ -1,5 +1,6 @@
 import sys
 import os
+import re
 from Config import config
 
 
@@ -10,6 +11,12 @@ class Notify(Exception):
 
     def __str__(self):
         return self.message
+
+
+def formatExceptionMessage(err):
+    err_type = err.__class__.__name__
+    err_message = str(err.args[-1])
+    return "%s: %s" % (err_type, err_message)
 
 
 def formatException(err=None, format="text"):
@@ -27,10 +34,15 @@ def formatException(err=None, format="text"):
     tb = []
     for frame in traceback.extract_tb(exc_tb):
         path, line, function, text = frame
-        file = os.path.split(path)[1]
-        tb.append("%s line %s" % (file, line))
+        dir_name, file_name = os.path.split(path.replace("\\", "/"))
+        plugin_match = re.match(".*/plugins/(.+)$", dir_name)
+        if plugin_match:
+            file_title = "%s/%s" % (plugin_match.group(1), file_name)
+        else:
+            file_title = file_name
+        tb.append("%s line %s" % (file_title, line))
     if format == "html":
-        return "%s: %s<br><small>%s</small>" % (exc_type.__name__, err, " > ".join(tb))
+        return "%s: %s<br><small class='multiline'>%s</small>" % (exc_type.__name__, err, " > ".join(tb))
     else:
         return "%s: %s in %s" % (exc_type.__name__, err, " > ".join(tb))
 
@@ -50,6 +62,7 @@ import logging
 import gevent
 import time
 
+
 def testBlock():
     logging.debug("Gevent block checker started")
     last_time = time.time()
@@ -63,10 +76,10 @@ gevent.spawn(testBlock)
 
 if __name__ == "__main__":
     try:
-        print 1 / 0
-    except Exception, err:
-        print type(err).__name__
-        print "1/0 error: %s" % formatException(err)
+        print(1 / 0)
+    except Exception as err:
+        print(type(err).__name__)
+        print("1/0 error: %s" % formatException(err))
 
     def loadJson():
         json.loads("Errr")
@@ -74,13 +87,13 @@ if __name__ == "__main__":
     import json
     try:
         loadJson()
-    except Exception, err:
-        print err
-        print "Json load error: %s" % formatException(err)
+    except Exception as err:
+        print(err)
+        print("Json load error: %s" % formatException(err))
 
     try:
         raise Notify("nothing...")
-    except Exception, err:
-        print "Notify: %s" % formatException(err)
+    except Exception as err:
+        print("Notify: %s" % formatException(err))
 
     loadJson()

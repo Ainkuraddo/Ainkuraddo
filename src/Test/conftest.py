@@ -1,22 +1,26 @@
 import os
 import sys
-import urllib
+import urllib.request
 import time
 import logging
 import json
 import shutil
 import gc
 import datetime
+import atexit
 
 import pytest
 import mock
 
 import gevent
+import gevent.event
 from gevent import monkey
 monkey.patch_all(thread=False, subprocess=False)
 
+
 def pytest_addoption(parser):
     parser.addoption("--slow", action='store_true', default=False, help="Also run slow tests")
+
 
 def pytest_collection_modifyitems(config, items):
     if config.getoption("--slow"):
@@ -34,28 +38,50 @@ else:
     CHROMEDRIVER_PATH = "chromedriver"
 SITE_URL = "http://127.0.0.1:43110"
 
+TEST_DATA_PATH  = 'src/Test/testdata'
 sys.path.insert(0, os.path.abspath(os.path.dirname(__file__) + "/../lib"))  # External modules directory
 sys.path.insert(0, os.path.abspath(os.path.dirname(__file__) + "/.."))  # Imports relative to src dir
 
 from Config import config
 config.argv = ["none"]  # Dont pass any argv to config parser
-config.parse(silent=True)  # Plugins need to access the configuration
+config.parse(silent=True, parse_config=False)  # Plugins need to access the configuration
 config.action = "test"
 
-logging.basicConfig(level=logging.DEBUG, stream=sys.stdout)
+# Load plugins
+from Plugin import PluginManager
+
+config.data_dir = TEST_DATA_PATH  # Use test data for unittests
+config.debug = True
+
+os.chdir(os.path.abspath(os.path.dirname(__file__) + "/../.."))  # Set working dir
+
+all_loaded = PluginManager.plugin_manager.loadPlugins()
+assert all_loaded, "Not all plugin loaded successfully"
+
+config.loadPlugins()
+config.parse(parse_config=False)  # Parse again to add plugin configuration options
+
+config.action = "test"
+config.debug = True
+config.debug_socket = True  # Use test data for unittests
+config.verbose = True  # Use test data for unittests
+config.tor = "disable"  # Don't start Tor client
+config.trackers = []
+config.data_dir = TEST_DATA_PATH  # Use test data for unittests
+config.initLogging()
 
 # Set custom formatter with realative time format (via: https://stackoverflow.com/questions/31521859/python-logging-module-time-since-last-log)
 class TimeFilter(logging.Filter):
 
     def filter(self, record):
         try:
-          last = self.last
+            last = self.last
         except AttributeError:
-          last = record.relativeCreated
+            last = record.relativeCreated
 
-        delta = datetime.datetime.fromtimestamp(record.relativeCreated/1000.0) - datetime.datetime.fromtimestamp(last/1000.0)
+        delta = datetime.datetime.fromtimestamp(record.relativeCreated / 1000.0) - datetime.datetime.fromtimestamp(last / 1000.0)
 
-        record.relative = '{0:.3f}'.format(delta.seconds + delta.microseconds/1000000.0)
+        record.relative = '{0:.3f}'.format(delta.seconds + delta.microseconds / 1000000.0)
 
         self.last = record.relativeCreated
         return True
@@ -65,39 +91,33 @@ fmt = logging.Formatter(fmt='+%(relative)ss %(levelname)-8s %(name)s %(message)s
 [hndl.addFilter(TimeFilter()) for hndl in log.handlers]
 [hndl.setFormatter(fmt) for hndl in log.handlers]
 
-# Load plugins
-from Plugin import PluginManager
-
-config.data_dir = "src/Test/testdata"  # Use test data for unittests
-
-os.chdir(os.path.abspath(os.path.dirname(__file__) + "/../.."))  # Set working dir
-# Cleanup content.db caches
-if os.path.isfile("%s/content.db" % config.data_dir):
-    os.unlink("%s/content.db" % config.data_dir)
-if os.path.isfile("%s-temp/content.db" % config.data_dir):
-    os.unlink("%s-temp/content.db" % config.data_dir)
-
-PluginManager.plugin_manager.loadPlugins()
-config.loadPlugins()
-config.parse()  # Parse again to add plugin configuration options
-
-config.debug_socket = True  # Use test data for unittests
-config.verbose = True  # Use test data for unittests
-config.tor = "disable"  # Don't start Tor client
-config.trackers = []
-config.data_dir = "src/Test/testdata"  # Use test data for unittests
-
-from Site import Site
+from Site.Site import Site
 from Site import SiteManager
 from User import UserManager
 from File import FileServer
 from Connection import ConnectionServer
 from Crypt import CryptConnection
+from Crypt import CryptBitcoin
 from Ui import UiWebsocket
 from Tor import TorManager
 from Content import ContentDb
 from util import RateLimit
 from Db import Db
+from Debug import Debug
+
+
+def cleanup():
+    Db.dbCloseAll()
+    for dir_path in [config.data_dir, config.data_dir + "-temp"]:
+        for file_name in os.listdir(dir_path):
+            ext = file_name.rsplit(".", 1)[-1]
+            if ext not in ["csr", "pem", "srl", "db", "json", "tmp"]:
+                continue
+            file_path = dir_path + "/" + file_name
+            if os.path.isfile(file_path):
+                os.unlink(file_path)
+
+atexit.register(cleanup)
 
 @pytest.fixture(scope="session")
 def resetSettings(request):
@@ -112,6 +132,7 @@ def resetSettings(request):
             }
         }
     """)
+
 
 @pytest.fixture(scope="session")
 def resetTempSettings(request):
@@ -196,6 +217,8 @@ def site_temp(request):
 @pytest.fixture(scope="session")
 def user():
     user = UserManager.user_manager.get()
+    if not user:
+        user = UserManager.user_manager.create()
     user.sites = {}  # Reset user data
     return user
 
@@ -204,7 +227,7 @@ def user():
 def browser(request):
     try:
         from selenium import webdriver
-        print "Starting chromedriver..."
+        print("Starting chromedriver...")
         options = webdriver.chrome.options.Options()
         options.add_argument("--headless")
         options.add_argument("--window-size=1920x1080")
@@ -214,7 +237,7 @@ def browser(request):
         def quit():
             browser.quit()
         request.addfinalizer(quit)
-    except Exception, err:
+    except Exception as err:
         raise pytest.skip("Test requires selenium + chromedriver: %s" % err)
     return browser
 
@@ -222,8 +245,8 @@ def browser(request):
 @pytest.fixture(scope="session")
 def site_url():
     try:
-        urllib.urlopen(SITE_URL).read()
-    except Exception, err:
+        urllib.request.urlopen(SITE_URL).read()
+    except Exception as err:
         raise pytest.skip("Test requires ainkuraddo client running: %s" % err)
     return SITE_URL
 
@@ -238,6 +261,7 @@ def file_server(request):
 
 @pytest.fixture
 def file_server4(request):
+    time.sleep(0.1)
     file_server = FileServer("127.0.0.1", 1544)
     file_server.ip_external = "1.2.3.4"  # Fake external ip
 
@@ -253,8 +277,8 @@ def file_server4(request):
             conn = file_server.getConnection("127.0.0.1", 1544)
             conn.close()
             break
-        except Exception, err:
-            print err
+        except Exception as err:
+            print("FileServer6 startup error", Debug.formatException(err))
     assert file_server.running
     file_server.ip_incoming = {}  # Reset flood protection
 
@@ -263,8 +287,10 @@ def file_server4(request):
     request.addfinalizer(stop)
     return file_server
 
+
 @pytest.fixture
 def file_server6(request):
+    time.sleep(0.1)
     file_server6 = FileServer("::1", 1544)
     file_server6.ip_external = 'fca5:95d6:bfde:d902:8951:276e:1111:a22c'  # Fake external ip
 
@@ -280,8 +306,8 @@ def file_server6(request):
             conn = file_server6.getConnection("::1", 1544)
             conn.close()
             break
-        except Exception, err:
-            print err
+        except Exception as err:
+            print("FileServer6 startup error", Debug.formatException(err))
     assert file_server6.running
     file_server6.ip_incoming = {}  # Reset flood protection
 
@@ -290,22 +316,28 @@ def file_server6(request):
     request.addfinalizer(stop)
     return file_server6
 
+
 @pytest.fixture()
-def ui_websocket(site, file_server, user):
+def ui_websocket(site, user):
     class WsMock:
         def __init__(self):
-            self.result = None
+            self.result = gevent.event.AsyncResult()
 
         def send(self, data):
-            self.result = json.loads(data)["result"]
+            self.result.set(json.loads(data)["result"])
+
+        def getResult(self):
+            back = self.result.get()
+            self.result = gevent.event.AsyncResult()
+            return back
 
     ws_mock = WsMock()
-    ui_websocket = UiWebsocket(ws_mock, site, file_server, user, None)
+    ui_websocket = UiWebsocket(ws_mock, site, None, user, None)
 
     def testAction(action, *args, **kwargs):
         func = getattr(ui_websocket, "action%s" % action)
         func(0, *args, **kwargs)
-        return ui_websocket.ws.result
+        return ui_websocket.ws.result.get()
 
     ui_websocket.testAction = testAction
     return ui_websocket
@@ -314,13 +346,14 @@ def ui_websocket(site, file_server, user):
 @pytest.fixture(scope="session")
 def tor_manager():
     try:
-        tor_manager = TorManager()
+        tor_manager = TorManager(fileserver_port=1544)
         tor_manager.start()
-        assert tor_manager.conn
+        assert tor_manager.conn is not None
         tor_manager.startOnions()
-    except Exception, err:
+    except Exception as err:
         raise pytest.skip("Test requires Tor with ControlPort: %s, %s" % (config.tor_controller, err))
     return tor_manager
+
 
 @pytest.fixture()
 def db(request):
@@ -360,7 +393,7 @@ def db(request):
 
     if os.path.isfile(db_path):
         os.unlink(db_path)
-    db = Db(schema, db_path)
+    db = Db.Db(schema, db_path)
     db.checkTables()
 
     def stop():
@@ -369,3 +402,10 @@ def db(request):
 
     request.addfinalizer(stop)
     return db
+
+
+@pytest.fixture(params=["btctools", "openssl", "libsecp256k1"])
+def crypt_bitcoin_lib(request, monkeypatch):
+    monkeypatch.setattr(CryptBitcoin, "lib_verify_best", request.param)
+    CryptBitcoin.loadLib(request.param)
+    return CryptBitcoin

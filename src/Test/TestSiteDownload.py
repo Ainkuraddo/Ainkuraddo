@@ -3,19 +3,20 @@ import time
 import pytest
 import mock
 import gevent
+import os
 
 from Connection import ConnectionServer
 from Config import config
 from File import FileRequest
 from File import FileServer
-from Site import Site
-import Spy
+from Site.Site import Site
+from . import Spy
 
 
 @pytest.mark.usefixtures("resetTempSettings")
 @pytest.mark.usefixtures("resetSettings")
 class TestSiteDownload:
-    def testDownload(self, file_server, site, site_temp):
+    def testRename(self, file_server, site, site_temp):
         assert site.storage.directory == config.data_dir + "/" + site.address
         assert site_temp.storage.directory == config.data_dir + "-temp/" + site.address
 
@@ -24,36 +25,104 @@ class TestSiteDownload:
         file_server.sites[site.address] = site
 
         # Init client server
-        client = ConnectionServer(file_server.ip, 1545)
+        client = FileServer(file_server.ip, 1545)
+        client.sites[site_temp.address] = site_temp
         site_temp.connection_server = client
         site_temp.announce = mock.MagicMock(return_value=True)  # Don't try to find peers from the net
 
+
         site_temp.addPeer(file_server.ip, 1544)
+
+        site_temp.download(blind_includes=True).join(timeout=5)
+
+        # Rename non-optional file
+        os.rename(site.storage.getPath("data/img/domain.png"), site.storage.getPath("data/img/domain-new.png"))
+
+        site.content_manager.sign("content.json", privatekey="5KUh3PvNm5HUWoCfSUfcYvfQ2g3PrRNJWr6Q9eqdBGu23mtMntv")
+
+        content = site.storage.loadJson("content.json")
+        assert "data/img/domain-new.png" in content["files"]
+        assert "data/img/domain.png" not in content["files"]
+        assert not site_temp.storage.isFile("data/img/domain-new.png")
+        assert site_temp.storage.isFile("data/img/domain.png")
+        settings_before = site_temp.settings
+
         with Spy.Spy(FileRequest, "route") as requests:
-            def boostRequest(inner_path):
-                # I really want these file
-                if inner_path == "index.html":
-                    site_temp.needFile("data/img/multiuser.png", priority=15, blocking=False)
-                    site_temp.needFile("data/img/direct_domains.png", priority=15, blocking=False)
-            site_temp.onFileDone.append(boostRequest)
-            site_temp.download(blind_includes=True).join(timeout=5)
-            file_requests = [request[3]["inner_path"] for request in requests if request[1] in ("getFile", "streamFile")]
-            # Test priority
-            assert file_requests[0:2] == ["content.json", "index.html"]  # Must-have files
-            assert file_requests[2:4] == ["data/img/multiuser.png", "data/img/direct_domains.png"]  # Directly requested files
-            assert file_requests[4:6] == ["css/all.css", "js/all.js"]  # Important assets
-            assert file_requests[6] == "dbschema.json"  # Database map
-            assert "-default" in file_requests[-1]  # Put default files for cloning to the end
+            site.publish()
+            time.sleep(0.1)
+            site_temp.download(blind_includes=True).join(timeout=5)  # Wait for download
+            assert "streamFile" not in [req[1] for req in requests]
 
-        # Check files
-        bad_files = site_temp.storage.verifyFiles(quick_check=True)["bad_files"]
+        content = site_temp.storage.loadJson("content.json")
+        assert "data/img/domain-new.png" in content["files"]
+        assert "data/img/domain.png" not in content["files"]
+        assert site_temp.storage.isFile("data/img/domain-new.png")
+        assert not site_temp.storage.isFile("data/img/domain.png")
 
-        # -1 because data/users/1J6... user has invalid cert
-        assert len(site_temp.content_manager.contents) == len(site.content_manager.contents) - 1
-        assert not bad_files
+        assert site_temp.settings["size"] == settings_before["size"]
+        assert site_temp.settings["size_optional"] == settings_before["size_optional"]
 
         assert site_temp.storage.deleteFiles()
         [connection.close() for connection in file_server.connections]
+
+    def testRenameOptional(self, file_server, site, site_temp):
+        assert site.storage.directory == config.data_dir + "/" + site.address
+        assert site_temp.storage.directory == config.data_dir + "-temp/" + site.address
+
+        # Init source server
+        site.connection_server = file_server
+        file_server.sites[site.address] = site
+
+        # Init client server
+        client = FileServer(file_server.ip, 1545)
+        client.sites[site_temp.address] = site_temp
+        site_temp.connection_server = client
+        site_temp.announce = mock.MagicMock(return_value=True)  # Don't try to find peers from the net
+
+
+        site_temp.addPeer(file_server.ip, 1544)
+
+        site_temp.download(blind_includes=True).join(timeout=5)
+
+        assert site_temp.settings["optional_downloaded"] == 0
+
+        site_temp.needFile("data/optional.txt")
+
+        assert site_temp.settings["optional_downloaded"] > 0
+        settings_before = site_temp.settings
+        hashfield_before = site_temp.content_manager.hashfield.tobytes()
+
+        # Rename optional file
+        os.rename(site.storage.getPath("data/optional.txt"), site.storage.getPath("data/optional-new.txt"))
+
+        site.content_manager.sign("content.json", privatekey="5KUh3PvNm5HUWoCfSUfcYvfQ2g3PrRNJWr6Q9eqdBGu23mtMntv", remove_missing_optional=True)
+
+        content = site.storage.loadJson("content.json")
+        assert "data/optional-new.txt" in content["files_optional"]
+        assert "data/optional.txt" not in content["files_optional"]
+        assert not site_temp.storage.isFile("data/optional-new.txt")
+        assert site_temp.storage.isFile("data/optional.txt")
+
+        with Spy.Spy(FileRequest, "route") as requests:
+            site.publish()
+            time.sleep(0.1)
+            site_temp.download(blind_includes=True).join(timeout=5)  # Wait for download
+            assert "streamFile" not in [req[1] for req in requests]
+
+        content = site_temp.storage.loadJson("content.json")
+        assert "data/optional-new.txt" in content["files_optional"]
+        assert "data/optional.txt" not in content["files_optional"]
+        assert site_temp.storage.isFile("data/optional-new.txt")
+        assert not site_temp.storage.isFile("data/optional.txt")
+
+        assert site_temp.settings["size"] == settings_before["size"]
+        assert site_temp.settings["size_optional"] == settings_before["size_optional"]
+        assert site_temp.settings["optional_downloaded"] == settings_before["optional_downloaded"]
+        assert site_temp.content_manager.hashfield.tobytes() == hashfield_before
+
+        assert site_temp.storage.deleteFiles()
+        [connection.close() for connection in file_server.connections]
+
 
     def testArchivedDownload(self, file_server, site, site_temp):
         # Init source server
@@ -289,7 +358,7 @@ class TestSiteDownload:
 
         # Update file
         data_original = site.storage.open("data/data.json").read()
-        data_new = data_original.replace('"ZeroBlog"', '"UpdatedZeroBlog"')
+        data_new = data_original.replace(b'"ZeroBlog"', b'"UpdatedZeroBlog"')
         assert data_original != data_new
 
         site.storage.open("data/data.json", "wb").write(data_new)
@@ -309,13 +378,13 @@ class TestSiteDownload:
         assert site_temp.storage.open("data/data.json").read() == data_new
 
         # Close connection to avoid update spam limit
-        site.peers.values()[0].remove()
+        list(site.peers.values())[0].remove()
         site.addPeer(file_server.ip, 1545)
-        site_temp.peers.values()[0].ping()  # Connect back
+        list(site_temp.peers.values())[0].ping()  # Connect back
         time.sleep(0.1)
 
         # Update with patch
-        data_new = data_original.replace('"ZeroBlog"', '"PatchedZeroBlog"')
+        data_new = data_original.replace(b'"ZeroBlog"', b'"PatchedZeroBlog"')
         assert data_original != data_new
 
         site.storage.open("data/data.json-new", "wb").write(data_new)
@@ -328,7 +397,7 @@ class TestSiteDownload:
         assert not site.storage.isFile("data/data.json-new")  # New data file removed
         assert site.storage.open("data/data.json").read() == data_new  # -new postfix removed
         assert "data/data.json" in diffs
-        assert diffs["data/data.json"] == [('=', 2), ('-', 29), ('+', ['\t"title": "PatchedZeroBlog",\n']), ('=', 31102)]
+        assert diffs["data/data.json"] == [('=', 2), ('-', 29), ('+', [b'\t"title": "PatchedZeroBlog",\n']), ('=', 31102)]
 
         # Publish with patch
         site.log.info("Publish new data.json with patch")
@@ -336,9 +405,58 @@ class TestSiteDownload:
             site.content_manager.sign("content.json", privatekey="5KUh3PvNm5HUWoCfSUfcYvfQ2g3PrRNJWr6Q9eqdBGu23mtMntv")
             site.publish(diffs=diffs)
             site_temp.download(blind_includes=True).join(timeout=5)
-            assert len([request for request in requests if request[0] in ("getFile", "streamFile")]) == 0
+            assert len([request for request in requests if request[1] in ("getFile", "streamFile")]) == 0
 
         assert site_temp.storage.open("data/data.json").read() == data_new
 
         assert site_temp.storage.deleteFiles()
         [connection.close() for connection in file_server.connections]
+
+    def testBigUpdate(self, file_server, site, site_temp):
+        # Init source server
+        site.connection_server = file_server
+        file_server.sites[site.address] = site
+
+        # Init client server
+        client = FileServer(file_server.ip, 1545)
+        client.sites[site_temp.address] = site_temp
+        site_temp.connection_server = client
+
+        # Connect peers
+        site_temp.addPeer(file_server.ip, 1544)
+
+        # Download site from site to site_temp
+        site_temp.download(blind_includes=True).join(timeout=5)
+
+        # Update file
+        data_original = site.storage.open("data/data.json").read()
+        data_new = data_original.replace(b'"ZeroBlog"', b'"PatchedZeroBlog"')
+        assert data_original != data_new
+
+        site.storage.open("data/data.json-new", "wb").write(data_new)
+
+        assert site.storage.open("data/data.json-new").read() == data_new
+        assert site_temp.storage.open("data/data.json").read() != data_new
+
+        # Generate diff
+        diffs = site.content_manager.getDiffs("content.json")
+        assert not site.storage.isFile("data/data.json-new")  # New data file removed
+        assert site.storage.open("data/data.json").read() == data_new  # -new postfix removed
+        assert "data/data.json" in diffs
+
+        content_json = site.storage.loadJson("content.json")
+        content_json["title"] = "BigZeroBlog" * 1024 * 10
+        site.storage.writeJson("content.json", content_json)
+        site.content_manager.loadContent("content.json", force=True)
+
+        # Publish with patch
+        site.log.info("Publish new data.json with patch")
+        with Spy.Spy(FileRequest, "route") as requests:
+            site.content_manager.sign("content.json", privatekey="5KUh3PvNm5HUWoCfSUfcYvfQ2g3PrRNJWr6Q9eqdBGu23mtMntv")
+            assert site.storage.getSize("content.json") > 10 * 1024  # Make it a big content.json
+            site.publish(diffs=diffs)
+            site_temp.download(blind_includes=True).join(timeout=5)
+            file_requests = [request for request in requests if request[1] in ("getFile", "streamFile")]
+            assert len(file_requests) == 1
+
+        assert site_temp.storage.open("data/data.json").read() == data_new

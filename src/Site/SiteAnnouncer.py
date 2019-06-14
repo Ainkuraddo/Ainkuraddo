@@ -1,17 +1,16 @@
 import random
 import time
 import hashlib
-import urllib
-import urllib2
+import urllib.request
 import struct
 import socket
 import re
 import collections
 
-from lib import bencode
+import bencode
 from lib.subtl.subtl import UdpTrackerClient
-from lib.PySocks import socks
-from lib.PySocks import sockshandler
+import socks
+import sockshandler
 import gevent
 
 from Plugin import PluginManager
@@ -69,7 +68,7 @@ class SiteAnnouncer(object):
         back = []
         # Type of addresses they can reach me
         if config.trackers_proxy == "disable":
-            for ip_type, opened in self.site.connection_server.port_opened.items():
+            for ip_type, opened in list(self.site.connection_server.port_opened.items()):
                 if opened:
                     back.append(ip_type)
         if self.site.connection_server.tor_manager.start_onions:
@@ -172,13 +171,14 @@ class SiteAnnouncer(object):
         if "://" not in tracker or not re.match("^[A-Za-z0-9:/\\.#-]+$", tracker):
             return None
         protocol, address = tracker.split("://", 1)
-        try:
+        if ":" in address:
             ip, port = address.rsplit(":", 1)
-        except ValueError as err:
+        else:
             ip = address
-            port = 80
             if protocol.startswith("https"):
                 port = 443
+            else:
+                port = 80
         back = {}
         back["protocol"] = protocol
         back["address"] = address
@@ -190,7 +190,7 @@ class SiteAnnouncer(object):
         s = time.time()
         address_parts = self.getAddressParts(tracker)
         if not address_parts:
-            self.site.log.warning("Tracker %s error: Invalid address" % tracker.decode("utf8", "ignore"))
+            self.site.log.warning("Tracker %s error: Invalid address" % tracker)
             return False
 
         if tracker not in self.stats:
@@ -214,14 +214,14 @@ class SiteAnnouncer(object):
                 peers = handler(address_parts["address"], mode=mode, num_want=num_want)
             else:
                 raise AnnounceError("Unknown protocol: %s" % address_parts["protocol"])
-        except Exception, err:
-            self.site.log.warning("Tracker %s announce failed: %s in mode %s" % (tracker, str(err).decode("utf8", "ignore"), mode))
+        except Exception as err:
+            self.site.log.warning("Tracker %s announce failed: %s in mode %s" % (tracker, Debug.formatException(err), mode))
             error = err
 
         if error:
             self.stats[tracker]["status"] = "error"
             self.stats[tracker]["time_status"] = time.time()
-            self.stats[tracker]["last_error"] = str(err).decode("utf8", "ignore")
+            self.stats[tracker]["last_error"] = str(error)
             self.stats[tracker]["time_last_error"] = time.time()
             self.stats[tracker]["num_error"] += 1
             self.stats[tracker]["num_request"] += 1
@@ -282,7 +282,7 @@ class SiteAnnouncer(object):
         tracker.connect()
         if not tracker.poll_once():
             raise AnnounceError("Could not connect")
-        tracker.announce(info_hash=hashlib.sha1(self.site.address).hexdigest(), num_want=num_want, left=431102370)
+        tracker.announce(info_hash=self.site.address_sha1, num_want=num_want, left=431102370)
         back = tracker.poll_once()
         if not back:
             raise AnnounceError("No response after %.0fs" % (time.time() - s))
@@ -303,19 +303,19 @@ class SiteAnnouncer(object):
             'Connection': 'keep-alive'
         }
 
-        req = urllib2.Request(url, headers=headers)
+        req = urllib.request.Request(url, headers=headers)
 
         if config.trackers_proxy == "tor":
             tor_manager = self.site.connection_server.tor_manager
             handler = sockshandler.SocksiPyHandler(socks.SOCKS5, tor_manager.proxy_ip, tor_manager.proxy_port)
-            opener = urllib2.build_opener(handler)
+            opener = urllib.request.build_opener(handler)
             return opener.open(req, timeout=50)
         elif config.trackers_proxy == "disable":
-            return urllib2.urlopen(req, timeout=25)
+            return urllib.request.urlopen(req, timeout=25)
         else:
             proxy_ip, proxy_port = config.trackers_proxy.split(":")
             handler = sockshandler.SocksiPyHandler(socks.SOCKS5, proxy_ip, int(proxy_port))
-            opener = urllib2.build_opener(handler)
+            opener = urllib.request.build_opener(handler)
             return opener.open(req, timeout=50)
 
     def announceTrackerHttps(self, *args, **kwargs):
@@ -329,13 +329,13 @@ class SiteAnnouncer(object):
         else:
             port = 1
         params = {
-            'info_hash': hashlib.sha1(self.site.address).digest(),
+            'info_hash': self.site.address_sha1,
             'peer_id': self.peer_id, 'port': port,
             'uploaded': 0, 'downloaded': 0, 'left': 431102370, 'compact': 1, 'numwant': num_want,
             'event': 'started'
         }
 
-        url = protocol + "://" + tracker_address + "?" + urllib.urlencode(params)
+        url = protocol + "://" + tracker_address + "?" + urllib.parse.urlencode(params)
 
         s = time.time()
         response = None
@@ -348,7 +348,6 @@ class SiteAnnouncer(object):
         with gevent.Timeout(timeout, False):  # Make sure of timeout
             req = self.httpRequest(url)
             response = req.read()
-            req.fp._sock.recv = None  # Hacky avoidance of memory leak for older python versions
             req.close()
             req = None
 
@@ -358,16 +357,18 @@ class SiteAnnouncer(object):
         # Decode peers
         try:
             peer_data = bencode.decode(response)["peers"]
+            if type(peer_data) is not bytes:
+                peer_data = peer_data.encode()
             response = None
-            peer_count = len(peer_data) / 6
+            peer_count = int(len(peer_data) / 6)
             peers = []
-            for peer_offset in xrange(peer_count):
+            for peer_offset in range(peer_count):
                 off = 6 * peer_offset
                 peer = peer_data[off:off + 6]
                 addr, port = struct.unpack('!LH', peer)
                 peers.append({"addr": socket.inet_ntoa(struct.pack('!L', addr)), "port": port})
         except Exception as err:
-            raise AnnounceError("Invalid response: %r (%s)" % (response, err))
+            raise AnnounceError("Invalid response: %r (%s)" % (response, Debug.formatException(err)))
 
         return peers
 
@@ -379,7 +380,7 @@ class SiteAnnouncer(object):
             peers = self.site.getConnectedPeers()
 
         if len(peers) == 0:  # Small number of connected peers for this site, connect to any
-            peers = self.site.peers.values()
+            peers = list(self.site.peers.values())
             need_num = 10
 
         random.shuffle(peers)
@@ -399,7 +400,7 @@ class SiteAnnouncer(object):
 
     def updateWebsocket(self, **kwargs):
         if kwargs:
-            param = {"event": kwargs.items()[0]}
+            param = {"event": list(kwargs.items())[0]}
         else:
             param = None
 

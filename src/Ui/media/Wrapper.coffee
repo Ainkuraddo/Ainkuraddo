@@ -33,6 +33,7 @@ class Wrapper
 		@address = null
 		@opener_tested = false
 		@announcer_line = null
+		@web_notifications = {}
 
 		@allowed_event_constructors = [window.MouseEvent, window.KeyboardEvent, window.PointerEvent] # Allowed event constructors
 
@@ -95,6 +96,7 @@ class Wrapper
 		else if cmd == "error"
 			@notifications.add("notification-#{message.id}", "error", message.params, 0)
 		else if cmd == "updating" # Close connection
+			@log "Updating: Closing websocket"
 			@ws.ws.close()
 			@ws.onCloseWebsocket(null, 4000)
 		else if cmd == "redirect"
@@ -189,6 +191,10 @@ class Wrapper
 			@actionPermissionAdd(message)
 		else if cmd == "wrapperRequestFullscreen"
 			@actionRequestFullscreen()
+		else if cmd == "wrapperWebNotification"
+			@actionWebNotification(message)
+		else if cmd == "wrapperCloseWebNotification"
+			@actionCloseWebNotification(message)
 		else # Send to websocket
 			if message.id < 1000000
 				if message.cmd == "fileWrite" and not @modified_panel_updater_timer and site_info?.settings?.own
@@ -234,6 +240,40 @@ class Wrapper
 		elem = document.getElementById("inner-iframe")
 		request_fullscreen = elem.requestFullScreen || elem.webkitRequestFullscreen || elem.mozRequestFullScreen || elem.msRequestFullScreen
 		request_fullscreen.call(elem)
+
+	actionWebNotification: (message) ->
+		$.when(@event_site_info).done =>
+			# Check that the wrapper may send notifications
+			if Notification.permission == "granted"
+				@displayWebNotification message
+			else if Notification.permission == "denied"
+				res = {"error": "Web notifications are disabled by the user"}
+				@sendInner {"cmd": "response", "to": message.id, "result": res}
+			else
+				Notification.requestPermission().then (permission) =>
+					if permission == "granted"
+						@displayWebNotification message
+
+	actionCloseWebNotification: (message) ->
+		$.when(@event_site_info).done =>
+			id = message.params[0]
+			@web_notifications[id].close()
+
+	displayWebNotification: (message) ->
+		title = message.params[0]
+		id = message.params[1]
+		options = message.params[2]
+		notification = new Notification(title, options)
+		@web_notifications[id] = notification
+		notification.onshow = () =>
+			@sendInner {"cmd": "response", "to": message.id, "result": "ok"}
+		notification.onclick = (e) =>
+			if not options.focus_tab
+				e.preventDefault()
+			@sendInner {"cmd": "webNotificationClick", "params": {"id": id}}
+		notification.onclose = () =>
+			@sendInner {"cmd": "webNotificationClose", "params": {"id": id}}
+			delete @web_notifications[id]
 
 	actionPermissionAdd: (message) ->
 		permission = message.params
@@ -315,9 +355,8 @@ class Wrapper
 		@displayPrompt message.params[0], type, caption, placeholder, (res) =>
 			@sendInner {"cmd": "response", "to": message.id, "result": res} # Response to confirm
 
-	actionProgress: (message) ->
-		message.params = @toHtmlSafe(message.params) # Escape html
-		percent = Math.min(100, message.params[2])/100
+	displayProgress: (type, body, percent) ->
+		percent = Math.min(100, percent)/100
 		offset = 75-(percent*75)
 		circle = """
 			<div class="circle"><svg class="circle-svg" width="30" height="30" viewport="0 0 30 30" version="1.1" xmlns="http://www.w3.org/2000/svg">
@@ -325,22 +364,22 @@ class Wrapper
   				<circle r="12" cx="15" cy="15" fill="transparent" class="circle-fg" style="stroke-dashoffset: #{offset}"></circle>
 			</svg></div>
 		"""
-		body = "<span class='message'>"+message.params[1]+"</span>" + circle
-		elem = $(".notification-#{message.params[0]}")
+		body = "<span class='message'>"+body+"</span>" + circle
+		elem = $(".notification-#{type}")
 		if elem.length
 			width = $(".body .message", elem).outerWidth()
-			$(".body .message", elem).html(message.params[1])
+			$(".body .message", elem).html(body)
 			if $(".body .message", elem).css("width") == ""
 				$(".body .message", elem).css("width", width)
 			$(".body .circle-fg", elem).css("stroke-dashoffset", offset)
 		else
-			elem = @notifications.add(message.params[0], "progress", $(body))
+			elem = @notifications.add(type, "progress", $(body))
 		if percent > 0
 			$(".body .circle-bg", elem).css {"animation-play-state": "paused", "stroke-dasharray": "180px"}
 
 		if $(".notification-icon", elem).data("done")
 			return false
-		else if message.params[2] >= 100  # Done
+		else if percent >= 1  # Done
 			$(".circle-fg", elem).css("transition", "all 0.3s ease-in-out")
 			setTimeout (->
 				$(".notification-icon", elem).css {transform: "scale(1)", opacity: 1}
@@ -350,7 +389,7 @@ class Wrapper
 				@notifications.close elem
 			), 3000
 			$(".notification-icon", elem).data("done", true)
-		else if message.params[2] < 0  # Error
+		else if percent < 0  # Error
 			$(".body .circle-fg", elem).css("stroke", "#ec6f47").css("transition", "transition: all 0.3s ease-in-out")
 			setTimeout (=>
 				$(".notification-icon", elem).css {transform: "scale(1)", opacity: 1}
@@ -359,6 +398,10 @@ class Wrapper
 			), 300
 			$(".notification-icon", elem).data("done", true)
 
+
+	actionProgress: (message) ->
+		message.params = @toHtmlSafe(message.params) # Escape html
+		@displayProgress(message.params[0], message.params[1], message.params[2])
 
 	actionSetViewport: (message) ->
 		@log "actionSetViewport", message
@@ -653,7 +696,7 @@ if origin.indexOf("https:") == 0
 else
 	proto = { ws: 'ws', http: 'http' }
 
-ws_url = proto.ws + ":" + origin.replace(proto.http+":", "") + "/Websocket?wrapper_key=" + window.wrapper_key
+ws_url = proto.ws + ":" + origin.replace(proto.http+":", "") + "/Ainkuraddo-Internal/Websocket?wrapper_key=" + window.wrapper_key
 
 window.wrapper = new Wrapper(ws_url)
 

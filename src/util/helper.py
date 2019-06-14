@@ -9,14 +9,10 @@ import logging
 import base64
 import gevent
 
-if "inet_pton" not in dir(socket):
-    import win_inet_pton
-
-
 from Config import config
 
 
-def atomicWrite(dest, content, mode="w"):
+def atomicWrite(dest, content, mode="wb"):
     try:
         with open(dest + "-tmpnew", mode) as f:
             f.write(content)
@@ -27,30 +23,34 @@ def atomicWrite(dest, content, mode="w"):
         if os.path.isfile(dest):  # Rename old file to -tmpold
             os.rename(dest, dest + "-tmpold")
         os.rename(dest + "-tmpnew", dest)
-        os.unlink(dest + "-tmpold")  # Remove old file
+        if os.path.isfile(dest + "-tmpold"):
+            os.unlink(dest + "-tmpold")  # Remove old file
         return True
-    except Exception, err:
+    except Exception as err:
         from Debug import Debug
         logging.error(
-            "File %s write failed: %s, reverting..." %
-            (dest, Debug.formatException(err))
+            "File %s write failed: %s, (%s) reverting..." %
+            (dest, Debug.formatException(err), Debug.formatStack())
         )
         if os.path.isfile(dest + "-tmpold") and not os.path.isfile(dest):
             os.rename(dest + "-tmpold", dest)
         return False
 
 
-def openLocked(path, mode="w"):
-    if os.name == "posix":
-        import fcntl
-        f = open(path, mode)
-        fcntl.flock(f, fcntl.LOCK_EX | fcntl.LOCK_NB)
-    elif os.name == "nt":
-        import msvcrt
-        f = open(path, mode)
-        msvcrt.locking(f.fileno(), msvcrt.LK_NBLCK, -1)
-    else:
-        f = open(path, mode)
+def openLocked(path, mode="wb"):
+    try:
+        if os.name == "posix":
+            import fcntl
+            f = open(path, mode)
+            fcntl.flock(f, fcntl.LOCK_EX | fcntl.LOCK_NB)
+        elif os.name == "nt":
+            import msvcrt
+            f = open(path, mode)
+            msvcrt.locking(f.fileno(), msvcrt.LK_NBLCK, 1)
+        else:
+            f = open(path, mode)
+    except (IOError, PermissionError, BlockingIOError) as err:
+        raise BlockingIOError("Unable to lock file: %s" % err)
     return f
 
 
@@ -67,7 +67,7 @@ def getFreeSpace():
                 ctypes.c_wchar_p(config.data_dir), None, None, ctypes.pointer(free_space_pointer)
             )
             free_space = free_space_pointer.value
-        except Exception, err:
+        except Exception as err:
             logging.error("GetFreeSpace error: %s" % err)
     return free_space
 
@@ -122,7 +122,7 @@ def packOnionAddress(onion, port):
 
 # From 12byte format to ip, port
 def unpackOnionAddress(packed):
-    return base64.b32encode(packed[0:-2]).lower() + ".onion", struct.unpack("H", packed[-2:])[0]
+    return base64.b32encode(packed[0:-2]).lower().decode() + ".onion", struct.unpack("H", packed[-2:])[0]
 
 
 # Get dir from file
@@ -160,7 +160,7 @@ def toHashId(hash):
 def mergeDicts(dicts):
     back = collections.defaultdict(set)
     for d in dicts:
-        for key, val in d.iteritems():
+        for key, val in d.items():
             back[key].update(val)
     return dict(back)
 
@@ -168,16 +168,16 @@ def mergeDicts(dicts):
 # Request https url using gevent SSL error workaround
 def httpRequest(url, as_file=False):
     if url.startswith("http://"):
-        import urllib
-        response = urllib.urlopen(url)
+        import urllib.request
+        response = urllib.request.urlopen(url)
     else:  # Hack to avoid Python gevent ssl errors
         import socket
-        import httplib
+        import http.client
         import ssl
 
         host, request = re.match("https://(.*?)(/.*?)$", url).groups()
 
-        conn = httplib.HTTPSConnection(host)
+        conn = http.client.HTTPSConnection(host)
         sock = socket.create_connection((conn.host, conn.port), conn.timeout, conn.source_address)
         conn.sock = ssl.wrap_socket(sock, conn.key_file, conn.cert_file)
         conn.request("GET", request)
@@ -187,8 +187,8 @@ def httpRequest(url, as_file=False):
             response = httpRequest(response.getheader('Location'))
 
     if as_file:
-        import cStringIO as StringIO
-        data = StringIO.StringIO()
+        import io
+        data = io.BytesIO()
         while True:
             buff = response.read(1024 * 16)
             if not buff:
@@ -300,3 +300,19 @@ def getInterfaceIps(ip_type="ipv4"):
 
     res = [re.sub("%.*", "", ip) for ip in res if getIpType(ip) == ip_type and isIp(ip)]
     return list(set(res))
+
+
+def cmp(a, b):
+    return (a > b) - (a < b)
+
+
+def encodeResponse(func):
+    def wrapper(*args, **kwargs):
+        back = func(*args, **kwargs)
+        if "__next__" in dir(back):
+            for part in back:
+                yield part.encode()
+        else:
+            yield back.encode()
+
+    return wrapper

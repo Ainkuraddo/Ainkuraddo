@@ -1,7 +1,7 @@
 import time
 import os
 
-from Db import Db
+from Db.Db import Db
 from Config import config
 from Plugin import PluginManager
 from Debug import Debug
@@ -19,7 +19,7 @@ class ContentDb(Db):
             foreign_key_error = self.execute("PRAGMA foreign_key_check").fetchone()
             if foreign_key_error:
                 raise Exception("Database foreign key error: %s" % foreign_key_error)
-        except Exception, err:
+        except Exception as err:
             self.log.error("Error loading content.db: %s, rebuilding..." % Debug.formatException(err))
             self.close()
             os.unlink(path)  # Remove and try again
@@ -95,8 +95,8 @@ class ContentDb(Db):
     def setContent(self, site, inner_path, content, size=0):
         self.insertOrUpdate("content", {
             "size": size,
-            "size_files": sum([val["size"] for key, val in content.get("files", {}).iteritems()]),
-            "size_files_optional": sum([val["size"] for key, val in content.get("files_optional", {}).iteritems()]),
+            "size_files": sum([val["size"] for key, val in content.get("files", {}).items()]),
+            "size_files_optional": sum([val["size"] for key, val in content.get("files_optional", {}).items()]),
             "modified": int(content.get("modified", 0))
         }, {
             "site_id": self.site_ids.get(site.address, 0),

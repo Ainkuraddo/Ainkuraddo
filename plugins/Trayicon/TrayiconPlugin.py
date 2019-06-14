@@ -17,15 +17,16 @@ class ActionsPlugin(object):
 
     def main(self):
         global notificationicon, winfolders
-        from lib import notificationicon, winfolders
+        from .lib import notificationicon, winfolders
         import gevent.threadpool
+        import main
 
-        self.main = sys.modules["main"]
+        self.main = main
 
         fs_encoding = sys.getfilesystemencoding()
 
         icon = notificationicon.NotificationIcon(
-            os.path.join(os.path.dirname(os.path.abspath(__file__).decode(fs_encoding)), 'trayicon.ico'),
+            os.path.join(os.path.dirname(os.path.abspath(__file__)), 'trayicon.ico'),
             "Ainkuraddo %s" % config.version
         )
         self.icon = icon
@@ -38,9 +39,14 @@ class ActionsPlugin(object):
 
         @atexit.register
         def hideIcon():
+            if not config.debug:
+                notificationicon.showConsole()
             icon.die()
 
         ui_ip = config.ui_ip if config.ui_ip != "*" else "127.0.0.1"
+
+        if ":" in ui_ip:
+            ui_ip = "[" + ui_ip + "]"
 
         icon.items = [
             (self.titleIp, False),
@@ -124,9 +130,9 @@ class ActionsPlugin(object):
 
         if not getattr(sys, 'frozen', False):  # Not frozen
             args.insert(0, sys.executable)
-            cwd = os.getcwd().decode(sys.getfilesystemencoding())
+            cwd = os.getcwd()
         else:
-            cwd = os.path.dirname(sys.executable).decode(sys.getfilesystemencoding())
+            cwd = os.path.dirname(sys.executable)
 
         if sys.platform == 'win32':
             args = ['"%s"' % arg for arg in args if arg]
@@ -135,9 +141,8 @@ class ActionsPlugin(object):
         # Dont open browser on autorun
         cmd = cmd.replace("start.py", "ainkuraddo.py").replace('"--open_browser"', "").replace('"default_browser"', "").strip()
         cmd += ' --open_browser ""'
-        cmd = cmd.decode(sys.getfilesystemencoding())
 
-        return u"""
+        return """
             @echo off
             chcp 65001 > nul
             set PYTHONIOENCODING=utf-8
@@ -147,7 +152,7 @@ class ActionsPlugin(object):
 
     def isAutorunEnabled(self):
         path = self.getAutorunPath()
-        return os.path.isfile(path) and open(path).read().decode("utf8") == self.formatAutorun()
+        return os.path.isfile(path) and open(path).read() == self.formatAutorun()
 
     def titleAutorun(self):
         translate = _["Start Ainkuraddo when Windows starts"]
@@ -160,4 +165,4 @@ class ActionsPlugin(object):
         if self.isAutorunEnabled():
             os.unlink(self.getAutorunPath())
         else:
-            open(self.getAutorunPath(), "w").write(self.formatAutorun().encode("utf8"))
+            open(self.getAutorunPath(), "w").write(self.formatAutorun())

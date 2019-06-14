@@ -11,6 +11,7 @@ import gevent
 
 from Config import config
 from Site import SiteManager
+from Crypt import CryptBitcoin
 from Debug import Debug
 from util import QueryJson, RateLimit
 from Plugin import PluginManager
@@ -49,13 +50,14 @@ class UiWebsocket(object):
         if self.site.address == config.homepage and not self.site.page_requested:
             # Add open fileserver port message or closed port error to homepage at first request after start
             self.site.page_requested = True  # Dont add connection notification anymore
-            file_server = sys.modules["main"].file_server
+            import main
+            file_server = main.file_server
             if not file_server.port_opened or file_server.tor_manager.start_onions is None:
                 self.site.page_requested = False  # Not ready yet, check next time
             else:
                 try:
                     self.addHomepageNotifications()
-                except Exception, err:
+                except Exception as err:
                     self.log.error("Uncaught Exception: " + Debug.formatException(err))
 
         for notification in self.site.notifications:  # Send pending notification messages
@@ -73,7 +75,7 @@ class UiWebsocket(object):
                     break
                 else:
                     message = ws.receive()
-            except Exception, err:
+            except Exception as err:
                 self.log.error("WebSocket receive error: %s" % Debug.formatException(err))
                 break
 
@@ -81,9 +83,10 @@ class UiWebsocket(object):
                 try:
                     req = json.loads(message)
                     self.handleRequest(req)
-                except Exception, err:
+                except Exception as err:
                     if config.debug:  # Allow websocket errors to appear on /Debug
-                        sys.modules["main"].DebugHook.handleError()
+                        import main
+                        main.DebugHook.handleError()
                     self.log.error("WebSocket handleRequest error: %s \n %s" % (Debug.formatException(err), message))
                     if not self.hasPlugin("Multiuser"):
                         self.cmd("error", "Internal error: %s" % Debug.formatException(err, "html"))
@@ -99,12 +102,13 @@ class UiWebsocket(object):
             if ("0.0.0.0" == bind_ip or "*" == bind_ip) and (not whitelist):
                 self.site.notifications.append([
                     "error",
-                    _(u"You are not going to set up a public gateway. However, <b>your Web UI is<br>" +
+                    _("You are not going to set up a public gateway. However, <b>your Web UI is<br>" +
                         "open to the whole Internet.</b> " +
                         "Please check your configuration.")
                 ])
 
-        file_server = sys.modules["main"].file_server
+        import main
+        file_server = main.file_server
         if any(file_server.port_opened.values()):
             self.site.notifications.append([
                 "done",
@@ -114,7 +118,7 @@ class UiWebsocket(object):
         elif config.tor == "always" and file_server.tor_manager.start_onions:
             self.site.notifications.append([
                 "done",
-                _(u"""
+                _("""
                 {_[Tor mode active, every connection using Onion route.]}<br>
                 {_[Successfully started Tor onion hidden services.]}
                 """),
@@ -123,7 +127,7 @@ class UiWebsocket(object):
         elif config.tor == "always" and file_server.tor_manager.start_onions is not False:
             self.site.notifications.append([
                 "error",
-                _(u"""
+                _("""
                 {_[Tor mode active, every connection using Onion route.]}<br>
                 {_[Unable to start hidden services, please check your config.]}
                 """),
@@ -132,7 +136,7 @@ class UiWebsocket(object):
         elif file_server.tor_manager.start_onions:
             self.site.notifications.append([
                 "done",
-                _(u"""
+                _("""
                 {_[Successfully started Tor onion hidden services.]}<br>
                 {_[For faster connections open <b>{0}</b> port on your router.]}
                 """).format(config.fileserver_port),
@@ -141,7 +145,7 @@ class UiWebsocket(object):
         else:
             self.site.notifications.append([
                 "error",
-                _(u"""
+                _("""
                 {_[Your connection is restricted. Please, open <b>{0}</b> port on your router]}<br>
                 {_[or configure Tor to become a full member of the Ainkuraddo network.]}
                 """).format(config.fileserver_port),
@@ -213,7 +217,7 @@ class UiWebsocket(object):
                 message = self.send_queue.pop(0)
                 self.ws.send(json.dumps(message))
                 self.state["sending"] = False
-        except Exception, err:
+        except Exception as err:
             self.log.debug("Websocket send error: %s" % Debug.formatException(err))
             self.state["sending"] = False
 
@@ -230,9 +234,10 @@ class UiWebsocket(object):
                 result = func(*args, **kwargs)
                 if result is not None:
                     self.response(args[0], result)
-            except Exception, err:
+            except Exception as err:
                 if config.debug:  # Allow websocket errors to appear on /Debug
-                    sys.modules["main"].DebugHook.handleError()
+                    import main
+                    main.DebugHook.handleError()
                 self.log.error("WebSocket handleRequest error: %s" % Debug.formatException(err))
                 self.cmd("error", "Internal error: %s" % Debug.formatException(err, "html"))
 
@@ -312,17 +317,18 @@ class UiWebsocket(object):
         }
         if site.settings["own"]:
             ret["privatekey"] = bool(self.user.getSiteData(site.address, create=create_user).get("privatekey"))
-        if site.settings["serving"] and content:
+        if site.isServing() and content:
             ret["peers"] += 1  # Add myself if serving
         return ret
 
     def formatServerInfo(self):
-        file_server = sys.modules["main"].file_server
+        import main
+        file_server = main.file_server
         if file_server.port_opened == {}:
             ip_external = None
         else:
             ip_external = any(file_server.port_opened.values())
-        return {
+        back = {
             "ip_external": ip_external,
             "port_opened": file_server.port_opened,
             "platform": sys.platform,
@@ -339,9 +345,15 @@ class UiWebsocket(object):
             "timecorrection": file_server.timecorrection,
             "language": config.language,
             "debug": config.debug,
+            "offline": config.offline,
             "plugins": PluginManager.plugin_manager.plugin_names,
             "user_settings": self.user.settings
         }
+        if "ADMIN" in self.site.settings["permissions"]:
+            back["updatesite"] = config.updatesite
+            back["dist_type"] = config.dist_type
+            back["lib_verify_best"] = CryptBitcoin.lib_verify_best
+        return back
 
     def formatAnnouncerInfo(self, site):
         return {"address": site.address, "stats": site.announcer.stats}
@@ -377,6 +389,9 @@ class UiWebsocket(object):
                 ret["event"] = ("file_done", file_status)
         self.response(to, ret)
 
+    def actionSiteBadFiles(self, to):
+        return list(self.site.bad_files.keys())
+
     # Join to an event channel
     def actionChannelJoin(self, to, channels):
         if type(channels) != list:
@@ -403,14 +418,14 @@ class UiWebsocket(object):
     def actionAnnouncerStats(self, to):
         back = {}
         trackers = self.site.announcer.getTrackers()
-        for site in self.server.sites.values():
-            for tracker, stats in site.announcer.stats.iteritems():
+        for site in list(self.server.sites.values()):
+            for tracker, stats in site.announcer.stats.items():
                 if tracker not in trackers:
                     continue
                 if tracker not in back:
                     back[tracker] = {}
                 is_latest_data = bool(stats["time_request"] > back[tracker].get("time_request", 0) and stats["status"])
-                for key, val in stats.iteritems():
+                for key, val in stats.items():
                     if key.startswith("num_"):
                         back[tracker][key] = back[tracker].get(key, 0) + val
                     elif is_latest_data:
@@ -446,6 +461,11 @@ class UiWebsocket(object):
 
         if privatekey == "stored":  # Get privatekey from sites.json
             privatekey = self.user.getSiteData(self.site.address).get("privatekey")
+            if not privatekey:
+                self.cmd("notification", ["error", _["Content signing failed"] + "<br><small>Private key not found in sites.json </small>"])
+                self.response(to, {"error": "Site sign failed: Private key not stored."})
+                self.log.error("Site sign failed: %s: Private key not stored in sites.json" % inner_path)
+                return
         if not privatekey:  # Get privatekey from users.json auth_address
             privatekey = self.user.getAuthPrivatekey(self.site.address)
 
@@ -539,7 +559,8 @@ class UiWebsocket(object):
                 self.response(to, "ok")
         else:
             if len(site.peers) == 0:
-                if any(sys.modules["main"].file_server.port_opened.values()) or sys.modules["main"].file_server.tor_manager.start_onions:
+                import main
+                if any(main.file_server.port_opened.values()) or main.file_server.tor_manager.start_onions:
                     if notification:
                         self.cmd("notification", ["info", _["No peers found, but your content is ready to access."]])
                     if callback:
@@ -548,7 +569,7 @@ class UiWebsocket(object):
                     if notification:
                         self.cmd("notification", [
                             "info",
-                            _(u"""{_[Your network connection is restricted. Please, open <b>{0}</b> port]}<br>
+                            _("""{_[Your network connection is restricted. Please, open <b>{0}</b> port]}<br>
                             {_[on your router to make your site accessible for everyone.]}""").format(config.fileserver_port)
                         ])
                     if callback:
@@ -580,7 +601,7 @@ class UiWebsocket(object):
                 self.cmd(
                     "confirm",
                     [_["This file still in sync, if you write it now, then the previous content may be lost."], _["Write content anyway"]],
-                    lambda (res): self.actionFileWrite(to, inner_path, content_base64, ignore_bad_files=True)
+                    lambda res: self.actionFileWrite(to, inner_path, content_base64, ignore_bad_files=True)
                 )
                 return False
 
@@ -601,7 +622,7 @@ class UiWebsocket(object):
                     shutil.copyfileobj(f_old, f_new)
 
             self.site.storage.write(inner_path, content)
-        except Exception, err:
+        except Exception as err:
             self.log.error("File write error: %s" % Debug.formatException(err))
             return self.response(to, {"error": "Write error: %s" % Debug.formatException(err)})
 
@@ -636,7 +657,7 @@ class UiWebsocket(object):
         if need_delete:
             try:
                 self.site.storage.delete(inner_path)
-            except Exception, err:
+            except Exception as err:
                 self.log.error("File delete error: %s" % err)
                 return self.response(to, {"error": "Delete error: %s" % err})
 
@@ -660,14 +681,16 @@ class UiWebsocket(object):
         try:
             return list(self.site.storage.walk(inner_path))
         except Exception as err:
-            return {"error": str(err)}
+            self.log.error("fileList %s error: %s" % (inner_path, Debug.formatException(err)))
+            return {"error": Debug.formatExceptionMessage(err)}
 
     # List directories in a directory
     def actionDirList(self, to, inner_path):
         try:
             return list(self.site.storage.list(inner_path))
         except Exception as err:
-            return {"error": str(err)}
+            self.log.error("dirList %s error: %s" % (inner_path, Debug.formatException(err)))
+            return {"error": Debug.formatExceptionMessage(err)}
 
     # Sql query
     def actionDbQuery(self, to, query, params=None, wait_for=None):
@@ -676,9 +699,9 @@ class UiWebsocket(object):
         rows = []
         try:
             res = self.site.storage.query(query, params)
-        except Exception, err:  # Response the error to client
+        except Exception as err:  # Response the error to client
             self.log.error("DbQuery error: %s" % err)
-            return self.response(to, {"error": str(err)})
+            return self.response(to, {"error": Debug.formatExceptionMessage(err)})
         # Convert result to dict
         for row in res:
             rows.append(dict(row))
@@ -693,20 +716,25 @@ class UiWebsocket(object):
                 with gevent.Timeout(timeout):
                     self.site.needFile(inner_path, priority=6)
             body = self.site.storage.read(inner_path, "rb")
-        except Exception, err:
-            self.log.error("%s fileGet error: %s" % (inner_path, err))
+        except (Exception, gevent.Timeout) as err:
+            self.log.error("%s fileGet error: %s" % (inner_path, Debug.formatException(err)))
             body = None
-        if body and format == "base64":
+
+        if not body:
+            body = None
+        elif format == "base64":
             import base64
-            body = base64.b64encode(body)
+            body = base64.b64encode(body).decode()
+        else:
+            body = body.decode()
         self.response(to, body)
 
     def actionFileNeed(self, to, inner_path, timeout=300):
         try:
             with gevent.Timeout(timeout):
                 self.site.needFile(inner_path, priority=6)
-        except Exception, err:
-            return self.response(to, {"error": str(err)})
+        except Exception as err:
+            return self.response(to, {"error": Debug.formatExceptionMessage(err)})
         return self.response(to, "ok")
 
     def actionFileRules(self, to, inner_path, use_my_cert=False, content=None):
@@ -725,7 +753,7 @@ class UiWebsocket(object):
         rules = self.site.content_manager.getRules(inner_path, content)
         if inner_path.endswith("content.json") and rules:
             if content:
-                rules["current_size"] = len(json.dumps(content)) + sum([file["size"] for file in content.get("files", {}).values()])
+                rules["current_size"] = len(json.dumps(content)) + sum([file["size"] for file in list(content.get("files", {}).values())])
             else:
                 rules["current_size"] = 0
         return self.response(to, rules)
@@ -749,11 +777,11 @@ class UiWebsocket(object):
                 self.cmd(
                     "confirm",
                     [body, _("Change it to {auth_type}/{auth_user_name}@{domain}")],
-                    lambda (res): self.cbCertAddConfirm(to, domain, auth_type, auth_user_name, cert)
+                    lambda res: self.cbCertAddConfirm(to, domain, auth_type, auth_user_name, cert)
                 )
             else:
                 self.response(to, "Not changed")
-        except Exception, err:
+        except Exception as err:
             self.log.error("CertAdd error: Exception - %s (%s)" % (err.message, Debug.formatException(err)))
             self.response(to, {"error": err.message})
 
@@ -781,7 +809,7 @@ class UiWebsocket(object):
         if not accepted_domains and not accepted_pattern:  # Accept any if no filter defined
             accept_any = True
 
-        for domain, cert in self.user.certs.items():
+        for domain, cert in list(self.user.certs.items()):
             if auth_address == cert["auth_address"] and domain == site_data.get("cert"):
                 active = domain
             title = cert["auth_user_name"] + "@" + domain
@@ -797,7 +825,7 @@ class UiWebsocket(object):
         for domain, account, css_class in accounts:
             if domain == active:
                 css_class += " active"  # Currently selected option
-                title = _(u"<b>%s</b> <small>({_[currently selected]})</small>") % account
+                title = _("<b>%s</b> <small>({_[currently selected]})</small>") % account
             else:
                 title = "<b>%s</b>" % account
             body += "<a href='#Select+account' class='select select-close cert %s' title='%s'>%s</a>" % (css_class, domain, title)
@@ -807,7 +835,7 @@ class UiWebsocket(object):
             # body+= "<small style='margin-top: 10px; display: block'>Accepted authorization providers by the site:</small>"
             body += "<div style='background-color: #F7F7F7; margin-right: -30px'>"
             for domain in more_domains:
-                body += _(u"""
+                body += _("""
                  <a href='/{domain}' target='_top' class='select'>
                   <small style='float: right; margin-right: 40px; margin-top: -1px'>{_[Register]} &raquo;</small>{domain}
                  </a>
@@ -845,6 +873,8 @@ class UiWebsocket(object):
             self.response(to, _["Modify your client's configuration and access all site"] + " <span style='color: red'>" + _["(Dangerous!)"] + "</span>")
         elif permission == "NOSANDBOX":
             self.response(to, _["Modify your client's configuration and access all site"] + " <span style='color: red'>" + _["(Dangerous!)"] + "</span>")
+        elif permission == "PushNotification":
+            self.response(to, _["Send notifications"])
         else:
             self.response(to, "")
 
@@ -858,7 +888,7 @@ class UiWebsocket(object):
     def actionCertList(self, to):
         back = []
         auth_address = self.user.getAuthAddress(self.site.address)
-        for domain, cert in self.user.certs.items():
+        for domain, cert in list(self.user.certs.items()):
             back.append({
                 "auth_address": cert["auth_address"],
                 "auth_type": cert["auth_type"],
@@ -872,7 +902,7 @@ class UiWebsocket(object):
     def actionSiteList(self, to, connecting_sites=False):
         ret = []
         SiteManager.site_manager.load()  # Reload sites
-        for site in self.server.sites.values():
+        for site in list(self.server.sites.values()):
             if not site.content_manager.contents.get("content.json") and not connecting_sites:
                 continue  # Incomplete site
             ret.append(self.formatSiteInfo(site, create_user=False))  # Dont generate the auth_address on listing
@@ -883,7 +913,7 @@ class UiWebsocket(object):
         if channel not in self.channels:  # Add channel to channels
             self.channels.append(channel)
 
-        for site in self.server.sites.values():  # Add websocket to every channel
+        for site in list(self.server.sites.values()):  # Add websocket to every channel
             if self not in site.websockets:
                 site.websockets.append(self)
 
@@ -939,15 +969,17 @@ class UiWebsocket(object):
         else:
             self.response(to, {"error": "Unknown site: %s" % address})
 
-    def cbSiteClone(self, to, address, root_inner_path="", target_address=None):
+    def cbSiteClone(self, to, address, root_inner_path="", target_address=None, redirect=True):
         self.cmd("notification", ["info", _["Cloning site..."]])
         site = self.server.sites.get(address)
+        response = {}
         if target_address:
             target_site = self.server.sites.get(target_address)
             privatekey = self.user.getSiteData(target_site.address).get("privatekey")
             site.clone(target_address, privatekey, root_inner_path=root_inner_path)
             self.cmd("notification", ["done", _["Site source code upgraded!"]])
             site.publish()
+            response = {"address": target_address}
         else:
             # Generate a new site from user's bip32 seed
             new_address, new_address_index, new_site_data = self.user.getNewSiteData()
@@ -955,11 +987,14 @@ class UiWebsocket(object):
             new_site.settings["own"] = True
             new_site.saveSettings()
             self.cmd("notification", ["done", _["Site cloned"]])
-            self.cmd("redirect", "/%s" % new_address)
+            if redirect :
+                self.cmd("redirect", "/%s" % new_address)
             gevent.spawn(new_site.announce)
+            response = {"address": new_address}
+        self.response(to, response)
         return "ok"
 
-    def actionSiteClone(self, to, address, root_inner_path="", target_address=None):
+    def actionSiteClone(self, to, address, root_inner_path="", target_address=None, redirect=True):
         if not SiteManager.site_manager.isAddress(address):
             self.response(to, {"error": "Not a site: %s" % address})
             return
@@ -970,19 +1005,19 @@ class UiWebsocket(object):
 
         site = self.server.sites.get(address)
         if site.bad_files:
-            for bad_inner_path in site.bad_files.keys():
+            for bad_inner_path in list(site.bad_files.keys()):
                 is_user_file = "cert_signers" in site.content_manager.getRules(bad_inner_path)
-                if not is_user_file:
+                if not is_user_file and bad_inner_path != "content.json":
                     self.cmd("notification", ["error", _["Clone error: Site still in sync"]])
                     return {"error": "Site still in sync"}
 
         if "ADMIN" in self.getPermissions(to):
-            self.cbSiteClone(to, address, root_inner_path, target_address)
+            self.cbSiteClone(to, address, root_inner_path, target_address, redirect)
         else:
             self.cmd(
                 "confirm",
                 [_["Clone site <b>%s</b>?"] % address, _["Clone"]],
-                lambda (res): self.cbSiteClone(to, address, root_inner_path, target_address)
+                lambda res: self.cbSiteClone(to, address, root_inner_path, target_address, redirect)
             )
 
     def actionSiteSetLimit(self, to, size_limit):
@@ -1009,11 +1044,11 @@ class UiWebsocket(object):
         modified_files = []
 
         # Load cache if not signed since last modified check
-        if content.get("modified", 0) < self.site.settings["cache"].get("time_modified_files_check"):
+        if content.get("modified", 0) < self.site.settings["cache"].get("time_modified_files_check", 0):
             min_mtime = self.site.settings["cache"].get("time_modified_files_check")
             modified_files = self.site.settings["cache"].get("modified_files", [])
 
-        inner_paths = [content_inner_path] + content.get("includes", {}).keys() + content.get("files", {}).keys()
+        inner_paths = [content_inner_path] + list(content.get("includes", {}).keys()) + list(content.get("files", {}).keys())
 
         for relative_inner_path in inner_paths:
             inner_path = helper.getDirname(content_inner_path) + relative_inner_path
@@ -1079,22 +1114,41 @@ class UiWebsocket(object):
         self.response(to, "ok")
 
     def actionServerUpdate(self, to):
-        self.cmd("updating")
-        sys.modules["main"].update_after_shutdown = True
-        SiteManager.site_manager.save()
-        sys.modules["main"].file_server.stop()
-        sys.modules["main"].ui_server.stop()
+        def cbServerUpdate(res):
+            self.response(to, res)
+            if not res:
+                return False
+            for websocket in self.server.websockets:
+                websocket.cmd(
+                    "notification",
+                    ["info", _["Updating Ainkuraddo client, will be back in a few minutes..."], 20000]
+                )
+                websocket.cmd("updating")
+
+            import main
+            main.update_after_shutdown = True
+            SiteManager.site_manager.save()
+            main.file_server.stop()
+            main.ui_server.stop()
+
+        self.cmd(
+            "confirm",
+            [_["Update <b>Ainkuraddo client</b> to latest version?"], _["Update"]],
+            cbServerUpdate
+        )
 
     def actionServerPortcheck(self, to):
-        file_server = sys.modules["main"].file_server
+        import main
+        file_server = main.file_server
         file_server.portCheck()
         self.response(to, file_server.port_opened)
 
     def actionServerShutdown(self, to, restart=False):
+        import main
         if restart:
-            sys.modules["main"].restart_after_shutdown = True
-        sys.modules["main"].file_server.stop()
-        sys.modules["main"].ui_server.stop()
+            main.restart_after_shutdown = True
+        main.file_server.stop()
+        main.ui_server.stop()
 
     def actionServerShowdirectory(self, to, directory="backup", inner_path=""):
         if self.request.env["REMOTE_ADDR"] != "127.0.0.1":
@@ -1116,6 +1170,7 @@ class UiWebsocket(object):
             return self.response(to, {"error": "Not a directory"})
 
     def actionConfigSet(self, to, key, value):
+        import main
         if key not in config.keys_api_change_allowed:
             self.response(to, {"error": "Forbidden you cannot set this config key"})
             return
@@ -1150,7 +1205,7 @@ class UiWebsocket(object):
                 value = False
             else:
                 value = True
-            tor_manager = sys.modules["main"].file_server.tor_manager
+            tor_manager = main.file_server.tor_manager
             tor_manager.request("SETCONF UseBridges=%i" % value)
 
         if key == "trackers_file":
@@ -1160,6 +1215,12 @@ class UiWebsocket(object):
             logging.getLogger('').setLevel(logging.getLevelName(config.log_level))
 
         if key == "ip_external":
-            gevent.spawn(sys.modules["main"].file_server.portCheck)
+            gevent.spawn(main.file_server.portCheck)
+
+        if key == "offline":
+            if value:
+                main.file_server.closeConnections()
+            else:
+                gevent.spawn(main.file_server.checkSites, check_files=False, force_port_check=True)
 
         self.response(to, "ok")

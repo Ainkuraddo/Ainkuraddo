@@ -3,7 +3,8 @@ import re
 import os
 import mimetypes
 import json
-import cgi
+import html
+import urllib
 
 import gevent
 
@@ -157,7 +158,8 @@ class UiRequest(object):
                 if func:
                     return func()
                 else:
-                    return self.error404(path)
+                    ret = self.error404(path)
+                    return ret
 
     # The request is proxied by chrome extension or a transparent proxy
     def isProxyRequest(self):
@@ -171,6 +173,7 @@ class UiRequest(object):
 
     # Get mime by filename
     def getContentType(self, file_name):
+        file_name = file_name.lower()
         content_type = mimetypes.guess_type(file_name)[0]
 
         if content_type:
@@ -178,19 +181,19 @@ class UiRequest(object):
 
         if file_name.endswith(".css"):  # Force correct css content type
             content_type = "text/css"
-
+        if file_name.endswith(".js"):  # Force correct javascript content type
+            content_type = "text/javascript"
+        if file_name.endswith(".json"):  # Correct json header
+            content_type = "application/json"
         if not content_type:
-            if file_name.endswith(".json"):  # Correct json header
-                content_type = "application/json"
-            else:
-                content_type = "application/octet-stream"
+            content_type = "application/octet-stream"
 
         return content_type
 
     # Return: <dict> Posted variables
     def getPosted(self):
         if self.env['REQUEST_METHOD'] == "POST":
-            return dict(cgi.parse_qsl(
+            return dict(urllib.parse.parse_qsl(
                 self.env['wsgi.input'].readline().decode()
             ))
         else:
@@ -200,7 +203,7 @@ class UiRequest(object):
     def getCookies(self):
         raw_cookies = self.env.get('HTTP_COOKIE')
         if raw_cookies:
-            cookies = cgi.parse_qsl(raw_cookies)
+            cookies = urllib.parse.parse_qsl(raw_cookies)
             return {key.strip(): val for key, val in cookies}
         else:
             return {}
@@ -246,14 +249,10 @@ class UiRequest(object):
         headers["Connection"] = "Keep-Alive"
         headers["Keep-Alive"] = "max=25, timeout=30"
         headers["X-Frame-Options"] = "SAMEORIGIN"
-        is_referer_allowed = False
-        if self.env.get("HTTP_REFERER"):
-            if self.isSameOrigin(self.getReferer(), self.getRequestUrl()):
-                is_referer_allowed = True
-            elif self.getReferer() == "%s://%s/" % (self.env["wsgi.url_scheme"], self.env["HTTP_HOST"]):  # Origin-only referer
-                is_referer_allowed = True
-        if content_type != "text/html" and is_referer_allowed:
+        if content_type != "text/html" and self.env.get("HTTP_REFERER") and self.isSameOrigin(self.getReferer(), self.getRequestUrl()):
             headers["Access-Control-Allow-Origin"] = "*"  # Allow load font files from css
+        if content_type == "text/javascript" and not self.env.get("HTTP_REFERER"):
+            headers["Access-Control-Allow-Origin"] = "*"  # Allow loading JavaScript modules in Chrome
 
         if noscript:
             headers["Content-Security-Policy"] = "default-src 'none'; sandbox allow-top-navigation allow-forms; img-src 'self'; font-src 'self'; media-src 'self'; style-src 'self' 'unsafe-inline';"
@@ -288,12 +287,12 @@ class UiRequest(object):
             headers["Cache-Control"] = "no-cache, no-store, private, must-revalidate, max-age=0"  # No caching at all
         headers["Content-Type"] = content_type
         headers.update(extra_headers)
-        return self.start_response(status_texts[status], headers.items())
+        return self.start_response(status_texts[status], list(headers.items()))
 
     # Renders a template
     def render(self, template_path, *args, **kwargs):
-        template = open(template_path).read()
-        for key, val in kwargs.items():
+        template = open(template_path, encoding="utf8").read()
+        for key, val in list(kwargs.items()):
             template = template.replace("{%s}" % key, "%s" % val)
         return template.encode("utf8")
 
@@ -302,7 +301,7 @@ class UiRequest(object):
     # Redirect to an url
     def actionRedirect(self, url):
         self.start_response('301 Redirect', [('Location', str(url))])
-        yield "Location changed: %s" % url
+        yield b"Location changed: " + url.encode("utf8")
 
     def actionIndex(self):
         return self.actionRedirect("/" + config.homepage)
@@ -342,10 +341,7 @@ class UiRequest(object):
 
             site = SiteManager.site_manager.get(address)
 
-            if (
-                site and site.content_manager.contents.get("content.json") and
-                (not site.getReachableBadFiles() or site.settings["own"])
-            ):  # Its downloaded or own
+            if site and site.content_manager.contents.get("content.json"):
                 title = site.content_manager.contents["content.json"]["title"]
             else:
                 title = "Loading %s..." % address
@@ -364,7 +360,7 @@ class UiRequest(object):
             self.sendHeader(extra_headers=extra_headers, script_nonce=script_nonce)
 
             min_last_announce = (time.time() - site.announcer.time_last_announce) / 60
-            if min_last_announce > 60 and site.settings["serving"] and not just_added:
+            if min_last_announce > 60 and site.isServing() and not just_added:
                 site.log.debug("Site requested, but not announced recently (last %.0fmin ago). Updating..." % min_last_announce)
                 gevent.spawn(site.update, announce=True)
 
@@ -453,11 +449,11 @@ class UiRequest(object):
             content = site.content_manager.contents["content.json"]
             if content.get("background-color"):
                 background_color = content.get("background-color-%s" % theme, content["background-color"])
-                body_style += "background-color: %s;" % cgi.escape(background_color, True)
+                body_style += "background-color: %s;" % html.escape(background_color)
             if content.get("viewport"):
-                meta_tags += '<meta name="viewport" id="viewport" content="%s">' % cgi.escape(content["viewport"], True)
+                meta_tags += '<meta name="viewport" id="viewport" content="%s">' % html.escape(content["viewport"])
             if content.get("favicon"):
-                meta_tags += '<link rel="icon" href="%s%s">' % (root_url, cgi.escape(content["favicon"], True))
+                meta_tags += '<link rel="icon" href="%s%s">' % (root_url, html.escape(content["favicon"]))
             if content.get("postmessage_nonce_security"):
                 postmessage_nonce_security = "true"
 
@@ -476,7 +472,7 @@ class UiRequest(object):
             file_url=re.escape(file_url),
             file_inner_path=re.escape(file_inner_path),
             address=site.address,
-            title=cgi.escape(title, True),
+            title=html.escape(title),
             body_style=body_style,
             meta_tags=meta_tags,
             query_string=re.escape(inner_query_string),
@@ -614,11 +610,12 @@ class UiRequest(object):
                     from Debug import DebugMedia
                     DebugMedia.merge(file_path)
                 return self.actionFile(file_path, header_length=False)  # Dont's send site to allow plugins append content
+
         else:  # Bad url
             return self.error400()
 
     def actionSiteAdd(self):
-        post = dict(cgi.parse_qsl(self.env["wsgi.input"].read()))
+        post = dict(urllib.parse.parse_qsl(self.env["wsgi.input"].read()))
         if post["add_nonce"] not in self.server.add_nonces:
             return self.error403("Add nonce error.")
         self.server.add_nonces.remove(post["add_nonce"])
@@ -632,7 +629,7 @@ class UiRequest(object):
 
         self.sendHeader(200, "text/html", noscript=True)
         template = open("src/Ui/template/site_add.html").read()
-        template = template.replace("{url}", cgi.escape(self.env["PATH_INFO"], True))
+        template = template.replace("{url}", html.escape(self.env["PATH_INFO"]))
         template = template.replace("{address}", path_parts["address"])
         template = template.replace("{add_nonce}", self.getAddNonce())
         return template
@@ -640,7 +637,7 @@ class UiRequest(object):
     def replaceHtmlVariables(self, block, path_parts):
         user = self.getCurrentUser()
         themeclass = "theme-%-6s" % re.sub("[^a-z]", "", user.settings.get("theme", "light"))
-        block = block.replace("{themeclass}", themeclass.encode("utf8"))
+        block = block.replace(b"{themeclass}", themeclass.encode("utf8"))
 
         if path_parts:
             site = self.server.sites.get(path_parts.get("address"))
@@ -648,23 +645,25 @@ class UiRequest(object):
                 modified = int(time.time())
             else:
                 modified = int(site.content_manager.contents["content.json"]["modified"])
-            block = block.replace("{site_modified}", str(modified))
+            block = block.replace(b"{site_modified}", str(modified).encode("utf8"))
 
         return block
 
     # Stream a file to client
     def actionFile(self, file_path, block_size=64 * 1024, send_header=True, header_length=True, header_noscript=False, header_allow_ajax=False, file_size=None, file_obj=None, path_parts=None):
+        file_name = os.path.basename(file_path)
+
         if file_size is None:
             file_size = helper.getFilesize(file_path)
 
         if file_size is not None:
             # Try to figure out content type by extension
-            content_type = self.getContentType(file_path)
+            content_type = self.getContentType(file_name)
 
             range = self.env.get("HTTP_RANGE")
             range_start = None
 
-            is_html_file = file_path.endswith(".html")
+            is_html_file = file_name.endswith(".html")
             if is_html_file:
                 header_length = False
 
@@ -705,7 +704,8 @@ class UiRequest(object):
                         file_obj.close()
                         break
         else:  # File not exists
-            yield self.error404(file_path)
+            for part in self.error404(str(file_path)):
+                yield part
 
     # On websocket connection
     def actionWebsocket(self):
@@ -714,46 +714,46 @@ class UiRequest(object):
             wrapper_key = self.get["wrapper_key"]
             # Find site by wrapper_key
             site = None
-            for site_check in self.server.sites.values():
+            for site_check in list(self.server.sites.values()):
                 if site_check.settings["wrapper_key"] == wrapper_key:
                     site = site_check
 
             if site:  # Correct wrapper key
                 try:
                     user = self.getCurrentUser()
-                except Exception, err:
-                    self.log.error("Error in data/user.json: %s" % err)
-                    return self.error500()
+                except Exception as err:
+                    ws.send(json.dumps({"error": "Error in data/user.json: %s" % err}))
+                    return self.error500("Error in data/user.json: %s" % err)
                 if not user:
-                    self.log.error("No user found")
-                    return self.error403()
+                    ws.send(json.dumps({"error": "No user found"}))
+                    return self.error403("No user found")
                 ui_websocket = UiWebsocket(ws, site, self.server, user, self)
                 site.websockets.append(ui_websocket)  # Add to site websockets to allow notify on events
                 self.server.websockets.append(ui_websocket)
                 ui_websocket.start()
                 self.server.websockets.remove(ui_websocket)
-                for site_check in self.server.sites.values():
+                for site_check in list(self.server.sites.values()):
                     # Remove websocket from every site (admin sites allowed to join other sites event channels)
                     if ui_websocket in site_check.websockets:
                         site_check.websockets.remove(ui_websocket)
                 return "Bye."
             else:  # No site found by wrapper key
-                self.log.error("Wrapper key not found: %s" % wrapper_key)
-                return self.error403()
+                ws.send(json.dumps({"error": "Wrapper key not found: %s" % wrapper_key}))
+                return self.error403("Wrapper key not found: %s" % wrapper_key)
         else:
             self.start_response("400 Bad Request", [])
-            return "Not a websocket!"
+            return [b"Not a websocket request!"]
 
     # Debug last error
     def actionDebug(self):
         # Raise last error from DebugHook
-        import sys
-        last_error = sys.modules["main"].DebugHook.last_error
+        import main
+        last_error = main.DebugHook.last_error
         if last_error:
-            raise last_error[0], last_error[1], last_error[2]
+            raise last_error[0](last_error[1]).with_traceback(last_error[2])
         else:
             self.sendHeader()
-            return "No error! :)"
+            return [b"No error! :)"]
 
     # Just raise an error to get console
     def actionConsole(self):
@@ -788,6 +788,7 @@ class UiRequest(object):
     # Send bad request error
     def error400(self, message=""):
         self.sendHeader(400, noscript=True)
+        self.log.error("Error 400: %s" % message)
         return self.formatError("Bad Request", message)
 
     # You are not allowed to access this
@@ -799,19 +800,21 @@ class UiRequest(object):
     # Send file not found error
     def error404(self, path=""):
         self.sendHeader(404, noscript=True)
-        return self.formatError("Not Found", path.encode("utf8"), details=False)
+        return self.formatError("Not Found", path, details=False)
 
     # Internal server error
     def error500(self, message=":("):
         self.sendHeader(500, noscript=True)
+        self.log.error("Error 500: %s" % message)
         return self.formatError("Server error", message)
 
+    @helper.encodeResponse
     def formatError(self, title, message, details=True):
         import sys
         import gevent
 
         if details and config.debug:
-            details = {key: val for key, val in self.env.items() if hasattr(val, "endswith") and "COOKIE" not in key}
+            details = {key: val for key, val in list(self.env.items()) if hasattr(val, "endswith") and "COOKIE" not in key}
             details["version_ainkuraddo"] = "%s r%s" % (config.version, config.rev)
             details["version_python"] = sys.version
             details["version_gevent"] = gevent.__version__
@@ -828,9 +831,9 @@ class UiRequest(object):
                 <h3>Please <a href="https://github.com/Ainkuraddo/Ainkuraddo/issues" target="_top">report it</a> if you think this an error.</h3>
                 <h4>Details:</h4>
                 <pre>%s</pre>
-            """ % (title, cgi.escape(message), cgi.escape(json.dumps(details, indent=4, sort_keys=True)))
+            """ % (title, html.escape(message), html.escape(json.dumps(details, indent=4, sort_keys=True)))
         else:
             return """
                 <h1>%s</h1>
                 <h2>%s</h3>
-            """ % (title, cgi.escape(message))
+            """ % (title, html.escape(message))

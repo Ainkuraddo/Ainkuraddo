@@ -1,10 +1,21 @@
 language: python
 python:
-  - 2.7
+  - 3.4
+  - 3.5
+  - 3.6
+  - 3.7
+  - 3.8-dev
+dist: xenial
 services:
  - docker
+cache: pip
+before_install:
+  - pip install --upgrade pip wheel
+  - pip install codecov coveralls flake8 mock pytest pytest-cov selenium
+  # - docker build -t ainkuraddo .
+  # - docker run -d -v $PWD:/root/data -p 15441:15441 -p 127.0.0.1:43110:43110 ainkuraddo
 install:
- - pip install -U pip wheel
+ - if [[ $TRAVIS_PYTHON_VERSION == 3.8-dev ]]; then pip install setuptools cffi 'cython>=0.28' git+git://github.com/gevent/gevent.git#egg=gevent; fi
  - pip install -r requirements.txt
  - pip list
 before_script:
@@ -20,18 +31,12 @@ script:
  - python -m pytest -x plugins/AnnounceLocal/Test
  - python -m pytest -x plugins/OptionalManager/Test
  - python -m pytest src/Test --cov=src --cov-config src/Test/coverage.ini
-before_install:
-  - pip install -U pytest mock pytest-cov selenium
-  - pip install codecov
-  - pip install coveralls
-  - docker build -t ainkuraddo .
-  - docker run -d -v $PWD:/root/data -p 15441:15441 -p 127.0.0.1:43110:43110 ainkuraddo
+ - mv plugins/disabled-Multiuser plugins/Multiuser && python -m pytest -x plugins/Multiuser/Test
+ - mv plugins/disabled-Bootstrapper plugins/Bootstrapper && python -m pytest -x plugins/Bootstrapper/Test
+ - flake8 . --count --select=E9,F63,F72,F82 --show-source --statistics --exclude=src/lib/pybitcointools/  
 after_success:
   - codecov
   - coveralls --rcfile=src/Test/coverage.ini
-cache:
-  directories:
-    - $HOME/.cache/pip
 notifications:
   email:
     recipients:

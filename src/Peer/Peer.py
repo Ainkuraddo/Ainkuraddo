@@ -6,11 +6,11 @@ import collections
 
 import gevent
 
-from cStringIO import StringIO
+import io
 from Debug import Debug
 from Config import config
 from util import helper
-from PeerHashfield import PeerHashfield
+from .PeerHashfield import PeerHashfield
 from Plugin import PluginManager
 
 if config.use_tempfiles:
@@ -21,8 +21,9 @@ if config.use_tempfiles:
 @PluginManager.acceptPlugins
 class Peer(object):
     __slots__ = (
-        "ip", "port", "site", "key", "connection", "connection_server", "time_found", "time_response", "time_hashfield", "time_added", "has_hashfield", "is_tracker_connection",
-        "time_my_hashfield_sent", "last_ping", "reputation", "last_content_json_update", "hashfield", "connection_error", "hash_failed", "download_bytes", "download_time"
+        "ip", "port", "site", "key", "connection", "connection_server", "time_found", "time_response", "time_hashfield",
+        "time_added", "has_hashfield", "is_tracker_connection", "time_my_hashfield_sent", "last_ping", "reputation",
+        "last_content_json_update", "hashfield", "connection_error", "hash_failed", "download_bytes", "download_time"
     )
 
     def __init__(self, ip, port, site=None, connection_server=None):
@@ -91,11 +92,12 @@ class Peer(object):
                 elif self.site:
                     connection_server = self.site.connection_server
                 else:
-                    connection_server = sys.modules["main"].file_server
+                    import main
+                    connection_server = main.file_server
                 self.connection = connection_server.getConnection(self.ip, self.port, site=self.site, is_tracker_connection=self.is_tracker_connection)
                 self.reputation += 1
                 self.connection.sites += 1
-            except Exception, err:
+            except Exception as err:
                 self.onConnectionError("Getting connection error")
                 self.log("Getting connection error: %s (connection_error: %s, hash_failed: %s)" %
                          (Debug.formatException(err), self.connection_error, self.hash_failed))
@@ -146,7 +148,7 @@ class Peer(object):
 
         self.log("Send request: %s %s %s %s" % (params.get("site", ""), cmd, params.get("inner_path", ""), params.get("location", "")))
 
-        for retry in range(1, 2):  # Retry 1 times
+        for retry in range(1, 4):  # Retry 3 times
             try:
                 if not self.connection:
                     raise Exception("No connection found")
@@ -164,7 +166,7 @@ class Peer(object):
                     return res
                 else:
                     raise Exception("Invalid response: %s" % res)
-            except Exception, err:
+            except Exception as err:
                 if type(err).__name__ == "Notify":  # Greenlet killed by worker
                     self.log("Peer worker got killed: %s, aborting cmd: %s" % (err.message, cmd))
                     break
@@ -195,7 +197,7 @@ class Peer(object):
         if config.use_tempfiles:
             buff = tempfile.SpooledTemporaryFile(max_size=16 * 1024, mode='w+b')
         else:
-            buff = StringIO()
+            buff = io.BytesIO()
 
         s = time.time()
         while True:  # Read in smaller parts
@@ -240,7 +242,7 @@ class Peer(object):
             with gevent.Timeout(10.0, False):  # 10 sec timeout, don't raise exception
                 res = self.request("ping")
 
-                if res and "body" in res and res["body"] == "Pong!":
+                if res and "body" in res and res["body"] == b"Pong!":
                     response_time = time.time() - s
                     break  # All fine, exit from for loop
             # Timeout reached or bad response
@@ -267,19 +269,16 @@ class Peer(object):
             request["peers_onion"] = packed_peers["onion"]
         if packed_peers["ipv6"]:
             request["peers_ipv6"] = packed_peers["ipv6"]
-
         res = self.request("pex", request)
-
         if not res or "error" in res:
             return False
-
         added = 0
 
         # Remove unsupported peer types
-        if "peers_ipv6" in res and "ipv6" not in self.connection.server.supported_ip_types:
+        if "peers_ipv6" in res and self.connection and "ipv6" not in self.connection.server.supported_ip_types:
             del res["peers_ipv6"]
 
-        if "peers_onion" in res and "onion" not in self.connection.server.supported_ip_types:
+        if "peers_onion" in res and self.connection and "onion" not in self.connection.server.supported_ip_types:
             del res["peers_onion"]
 
         # Add IPv4 + IPv6
@@ -313,7 +312,7 @@ class Peer(object):
         res = self.request("getHashfield", {"site": self.site.address})
         if not res or "error" in res or "hashfield_raw" not in res:
             return False
-        self.hashfield.replaceFromString(res["hashfield_raw"])
+        self.hashfield.replaceFromBytes(res["hashfield_raw"])
 
         return self.hashfield
 
@@ -331,13 +330,13 @@ class Peer(object):
                 key = "peers"
             else:
                 key = "peers_%s" % ip_type
-            for hash, peers in res.get(key, {}).items()[0:30]:
+            for hash, peers in list(res.get(key, {}).items())[0:30]:
                 if ip_type == "onion":
                     unpacker_func = helper.unpackOnionAddress
                 else:
                     unpacker_func = helper.unpackAddress
 
-                back[hash] += map(unpacker_func, peers)
+                back[hash] += list(map(unpacker_func, peers))
 
         for hash in res.get("my", []):
             back[hash].append((self.connection.ip, self.connection.port))
@@ -352,12 +351,25 @@ class Peer(object):
         if self.time_my_hashfield_sent and self.site.content_manager.hashfield.time_changed <= self.time_my_hashfield_sent:
             return False  # Peer already has the latest hashfield
 
-        res = self.request("setHashfield", {"site": self.site.address, "hashfield_raw": self.site.content_manager.hashfield.tostring()})
+        res = self.request("setHashfield", {"site": self.site.address, "hashfield_raw": self.site.content_manager.hashfield.tobytes()})
         if not res or "error" in res:
             return False
         else:
             self.time_my_hashfield_sent = time.time()
             return True
+
+    def publish(self, address, inner_path, body, modified, diffs=[]):
+        if len(body) > 10 * 1024 and self.connection and self.connection.handshake.get("rev", 0) >= 4095:
+            # To save bw we don't push big content.json to peers
+            body = b""
+
+        return self.request("update", {
+            "site": address,
+            "inner_path": inner_path,
+            "body": body,
+            "modified": modified,
+            "diffs": diffs
+        })
 
     # Stop and remove from site
     def remove(self, reason="Removing"):

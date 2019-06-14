@@ -1,5 +1,6 @@
 import time
 import re
+import gevent
 from util import helper
 
 
@@ -14,10 +15,16 @@ class DbCursor:
         self.cursor = conn.cursor()
         self.logging = False
 
-    def execute(self, query, params=None):
-        self.db.last_query_time = time.time()
+    def quoteValue(self, value):
+        if type(value) is int:
+            return str(value)
+        else:
+            return "'%s'" % value.replace("'", "''")
+
+    def parseQuery(self, query, params):
+        query_type = query.split(" ", 1)[0].upper()
         if isinstance(params, dict) and "?" in query:  # Make easier select and insert by allowing dict params
-            if query.startswith("SELECT") or query.startswith("DELETE") or query.startswith("UPDATE"):
+            if query_type in ("SELECT", "DELETE", "UPDATE"):
                 # Convert param dict to SELECT * FROM table WHERE key = ? AND key2 = ? format
                 query_wheres = []
                 values = []
@@ -35,7 +42,8 @@ class DbCursor:
                         else:
                             query_values = ",".join(["?"] * len(value))
                             values += value
-                        query_wheres.append("%s %s (%s)" %
+                        query_wheres.append(
+                            "%s %s (%s)" %
                             (field, operator, query_values)
                         )
                     else:
@@ -74,7 +82,18 @@ class DbCursor:
                     new_params[key] = value
 
             params = new_params
+        return query, params
 
+    def execute(self, query, params=None):
+        if query.upper().strip("; ") == "VACUUM":
+            self.db.commit("vacuum called")
+        query = query.strip()
+        while self.db.progress_sleeping:
+            time.sleep(0.1)
+
+        self.db.last_query_time = time.time()
+
+        query, params = self.parseQuery(query, params)
 
         s = time.time()
 
@@ -94,6 +113,11 @@ class DbCursor:
             self.db.query_stats[query]["call"] += 1
             self.db.query_stats[query]["time"] += time.time() - s
 
+        if not self.db.need_commit:
+            query_type = query.split(" ", 1)[0].upper()
+            if query_type in ["UPDATE", "DELETE", "INSERT", "CREATE"]:
+                self.db.need_commit = True
+
         return res
 
     # Creates on updates a database row without incrementing the rowid
@@ -103,7 +127,7 @@ class DbCursor:
 
         params = query_sets
         params.update(query_wheres)
-        self.cursor.execute(
+        self.execute(
             "UPDATE %s SET %s WHERE %s" % (table, ", ".join(sql_sets), " AND ".join(sql_wheres)),
             params
         )

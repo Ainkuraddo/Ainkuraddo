@@ -208,7 +208,7 @@
 			"post_id": 7,
 			"title": "Changelog: Jan 29, 2015",
 			"date_published": 1422664081.662,
-			"body": "The default tracker (tracker.pomf.se) is down since yesterday and its resulting some warning messages. To make it disappear please update to latest version from [GitHub](https://github.com/Ainkuraddo/Ainkuraddo).\n\nAinkuraddo:\n- Added better tracker error handling\n- Updated alive [trackers list](https://github.com/Ainkuraddo/Ainkuraddo/blob/master/src/Site/SiteManager.py) (if anyone have more, please [let us know](http://www.reddit.com/r/ainkuraddo/comments/2sgjsp/changelog/co5y07h))\n\nIf you want to stay updated about the project status: <br>\nWe have created a [@Ainkuraddo](https://twitter.com/Ainkuraddo) Twitter account"
+			"body": "The default tracker (tracker.pomf.se) is down since yesterday and its resulting some warning messages. To make it disappear please update to latest version from [GitHub](https://github.com/Ainkuraddo/Ainkuraddo).\n\nAinkuraddo:\n- Added better tracker error handling\n- Updated alive [trackers list](https://github.com/Ainkuraddo/Ainkuraddo/blob/master/src/Site/SiteManager.py) (if anyone have more, please [let us know](http://www.reddit.com/r/ainkuraddo/comments/2sgjsp/changelog/co5y07h))\n\nIf you want to stay updated about the project status: <br>\nWe have created a [@HelloAinkuraddo](https://twitter.com/Ainkuraddo) Twitter account"
 		},
 		{
 			"post_id": 6,

@@ -3,7 +3,7 @@ import sys
 import os
 import locale
 import re
-import ConfigParser
+import configparser
 import logging
 import logging.handlers
 import stat
@@ -12,20 +12,23 @@ import stat
 class Config(object):
 
     def __init__(self, argv):
-        self.version = "0.6.5"
-        self.rev = 3866
+        self.version = "0.7.0"
+        self.rev = 4106
         self.argv = argv
         self.action = None
         self.pending_changes = {}
         self.need_restart = False
         self.keys_api_change_allowed = set([
             "tor", "fileserver_port", "language", "tor_use_bridges", "trackers_proxy", "trackers",
-            "trackers_file", "open_browser", "log_level", "fileserver_ip_type", "ip_external"
+            "trackers_file", "open_browser", "log_level", "fileserver_ip_type", "ip_external", "offline"
         ])
         self.keys_restart_need = set(["tor", "fileserver_port", "fileserver_ip_type"])
         self.start_dir = self.getStartDir()
 
-        self.config_file = "ainkuraddo.conf"
+        self.config_file = self.start_dir + "/ainkuraddo.conf"
+        self.data_dir = self.start_dir + "/data"
+        self.log_dir = self.start_dir + "/log"
+
         self.trackers_file = False
         self.createParser()
         self.createArguments()
@@ -50,16 +53,16 @@ class Config(object):
             # Running as Ainkuraddo.app
             if this_file.startswith("/Application") or this_file.startswith("/private") or this_file.startswith(os.path.expanduser("~/Library")):
                 # Runnig from non-writeable directory, put data to Application Support
-                start_dir = os.path.expanduser("~/Library/Application Support/Ainkuraddo").decode(sys.getfilesystemencoding())
+                start_dir = os.path.expanduser("~/Library/Application Support/Ainkuraddo")
             else:
                 # Running from writeable directory put data next to .app
-                start_dir = re.sub("/[^/]+/Contents/Resources/core/src/Config.py", "", this_file).decode(sys.getfilesystemencoding())
+                start_dir = re.sub("/[^/]+/Contents/Resources/core/src/Config.py", "", this_file)
         elif this_file.endswith("/core/src/Config.py"):
             # Running as exe or source is at Application Support directory, put var files to outside of core dir
-            start_dir = this_file.replace("/core/src/Config.py", "").decode(sys.getfilesystemencoding())
+            start_dir = this_file.replace("/core/src/Config.py", "")
         elif this_file.endswith("usr/share/ainkuraddo/src/Config.py"):
             # Running from non-writeable location, e.g., AppImage
-            start_dir = os.path.expanduser("~/Ainkuraddo").decode(sys.getfilesystemencoding())
+            start_dir = os.path.expanduser("~/Ainkuraddo")
         else:
             start_dir = "."
 
@@ -76,7 +79,6 @@ class Config(object):
             "http://tracker2.itzmx.com:6961/announce",  # US/LA
             "http://open.acgnxtracker.com:80/announce",  # DE
             "http://open.trackerlist.xyz:80/announce",  # Cloudflare
-            "https://1.tracker.eu.org:443/announce",  # Google App Engine
             "zero://2602:ffc5::c5b2:5360:26312"  # US/ATL
         ]
         # Platform specific
@@ -226,8 +228,10 @@ class Config(object):
                                  nargs='?', const="default_browser", metavar='browser_name')
         self.parser.add_argument('--homepage', help='Web interface Homepage', default='1HeLLo4uzjaLetFx6NH3PMwFP3qbRbTf3D',
                                  metavar='address')
-        self.parser.add_argument('--updatesite', help='Source code update site', default='1UPDatEDxnvHDo7TXvq6AEBARfNkyfxsp',
+        self.parser.add_argument('--updatesite', help='Source code update site', default='1uPDaT3uSyWAPdCv1WkMb5hBQjWSNNACf',
                                  metavar='address')
+        self.parser.add_argument('--dist_type', help='Type of installed distribution', default='source')
+
         self.parser.add_argument('--size_limit', help='Default site size limit in MB', default=10, type=int, metavar='limit')
         self.parser.add_argument('--file_size_limit', help='Maximum per file size limit in MB', default=10, type=int, metavar='limit')
         self.parser.add_argument('--connected_limit', help='Max connected peer per site', default=8, type=int, metavar='connected_limit')
@@ -240,6 +244,7 @@ class Config(object):
         self.parser.add_argument('--fileserver_ip_type', help='FileServer ip type', default="dual", choices=["ipv4", "ipv6", "dual"])
         self.parser.add_argument('--ip_local', help='My local ips', default=ip_local, type=int, metavar='ip', nargs='*')
         self.parser.add_argument('--ip_external', help='Set reported external ip (tested on start if None)', metavar='ip', nargs='*')
+        self.parser.add_argument('--offline', help='Disable network communication', action='store_true')
 
         self.parser.add_argument('--disable_udp', help='Disable UDP connections', action='store_true')
         self.parser.add_argument('--proxy', help='Socks proxy address', metavar='ip:port')
@@ -247,8 +252,8 @@ class Config(object):
         self.parser.add_argument('--trackers', help='Bootstraping torrent trackers', default=trackers, metavar='protocol://address', nargs='*')
         self.parser.add_argument('--trackers_file', help='Load torrent trackers dynamically from a file', default=False, metavar='path')
         self.parser.add_argument('--trackers_proxy', help='Force use proxy to connect to trackers (disable, tor, ip:port)', default="disable")
-        self.parser.add_argument('--use_openssl', help='Use OpenSSL liblary for speedup',
-                                 type='bool', choices=[True, False], default=use_openssl)
+        self.parser.add_argument('--use_libsecp256k1', help='Use Libsecp256k1 liblary for speedup', type='bool', choices=[True, False], default=True)
+        self.parser.add_argument('--use_openssl', help='Use OpenSSL liblary for speedup', type='bool', choices=[True, False], default=True)
         self.parser.add_argument('--disable_db', help='Disable database updating', action='store_true')
         self.parser.add_argument('--disable_encryption', help='Disable connection encryption', action='store_true')
         self.parser.add_argument('--force_encryption', help="Enforce encryption to all peer connections", action='store_true')
@@ -304,7 +309,7 @@ class Config(object):
                 if "://" in tracker and tracker not in self.trackers:
                     self.trackers.append(tracker)
         except Exception as err:
-            print "Error loading trackers file: %s" % err
+            print("Error loading trackers file: %s" % err)
 
     # Find arguments specified for current action
     def getActionArguments(self):
@@ -316,7 +321,7 @@ class Config(object):
 
     # Try to find action from argv
     def getAction(self, argv):
-        actions = [action.choices.keys() for action in self.parser._actions if action.dest == "action"][0]  # Valid actions
+        actions = [list(action.choices.keys()) for action in self.parser._actions if action.dest == "action"][0]  # Valid actions
         found_action = False
         for action in actions:  # See if any in argv
             if action in argv:
@@ -404,7 +409,7 @@ class Config(object):
             self.config_file = argv[argv.index("--config_file") + 1]
         # Load config file
         if os.path.isfile(self.config_file):
-            config = ConfigParser.ConfigParser(allow_no_value=True)
+            config = configparser.ConfigParser(allow_no_value=True)
             config.read(self.config_file)
             for section in config.sections():
                 for key, val in config.items(section):
@@ -500,6 +505,7 @@ class Config(object):
 
     def getServerInfo(self):
         from Plugin import PluginManager
+        import main
 
         info = {
             "platform": sys.platform,
@@ -519,10 +525,10 @@ class Config(object):
         }
 
         try:
-            info["ip_external"] = sys.modules["main"].file_server.port_opened
-            info["tor_enabled"] = sys.modules["main"].file_server.tor_manager.enabled
-            info["tor_status"] = sys.modules["main"].file_server.tor_manager.status
-        except:
+            info["ip_external"] = main.file_server.port_opened
+            info["tor_enabled"] = main.file_server.tor_manager.enabled
+            info["tor_status"] = main.file_server.tor_manager.status
+        except Exception:
             pass
 
         return info
@@ -550,14 +556,18 @@ class Config(object):
             log_file_path = "%s/debug.log" % self.log_dir
         else:
             log_file_path = "%s/cmd.log" % self.log_dir
+
         if self.log_rotate == "off":
-            file_logger = logging.FileHandler(log_file_path)
+            file_logger = logging.FileHandler(log_file_path, "w", "utf-8")
         else:
             when_names = {"weekly": "w", "daily": "d", "hourly": "h"}
             file_logger = logging.handlers.TimedRotatingFileHandler(
-                log_file_path, when=when_names[self.log_rotate], interval=1, backupCount=self.log_rotate_backup_count
+                log_file_path, when=when_names[self.log_rotate], interval=1, backupCount=self.log_rotate_backup_count,
+                encoding="utf8"
             )
-            file_logger.doRollover()  # Always start with empty log file
+
+            if os.path.isfile(log_file_path):
+                file_logger.doRollover()  # Always start with empty log file
         file_logger.setFormatter(logging.Formatter('[%(asctime)s] %(levelname)-8s %(name)s %(message)s'))
         file_logger.setLevel(logging.getLevelName(self.log_level))
         logging.getLogger('').setLevel(logging.getLevelName(self.log_level))
@@ -570,13 +580,14 @@ class Config(object):
             try:
                 os.chmod(self.log_dir, stat.S_IRUSR | stat.S_IWUSR | stat.S_IXUSR)
             except Exception as err:
-                print "Can't change permission of %s: %s" % (self.log_dir, err)
+                print("Can't change permission of %s: %s" % (self.log_dir, err))
 
         # Make warning hidden from console
         logging.WARNING = 15  # Don't display warnings if not in debug mode
         logging.addLevelName(15, "WARNING")
 
         logging.getLogger('').name = "-"  # Remove root prefix
+        logging.getLogger("geventwebsocket.handler").setLevel(logging.WARNING)  # Don't log ws debug messages
 
         self.initConsoleLogger()
         self.initFileLogger()

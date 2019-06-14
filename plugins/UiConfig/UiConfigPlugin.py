@@ -1,7 +1,8 @@
+import io
+
 from Plugin import PluginManager
 from Config import config
 from Translate import Translate
-from cStringIO import StringIO
 
 
 if "_" not in locals():
@@ -41,13 +42,13 @@ class UiRequestPlugin(object):
                 DebugMedia.merge(file_path)
 
             if file_path.endswith("js"):
-                data = _.translateData(open(file_path).read(), mode="js")
+                data = _.translateData(open(file_path).read(), mode="js").encode("utf8")
             elif file_path.endswith("html"):
-                data = _.translateData(open(file_path).read(), mode="html")
+                data = _.translateData(open(file_path).read(), mode="html").encode("utf8")
             else:
-                data = open(file_path).read()
+                data = open(file_path, "rb").read()
 
-            return self.actionFile(file_path, file_obj=StringIO(data), file_size=len(data))
+            return self.actionFile(file_path, file_obj=io.BytesIO(data), file_size=len(data))
         else:
             return super(UiRequestPlugin, self).actionUiMedia(path)
 
@@ -58,7 +59,7 @@ class UiWebsocketPlugin(object):
         back = {}
         config_values = vars(config.arguments)
         config_values.update(config.pending_changes)
-        for key, val in config_values.iteritems():
+        for key, val in config_values.items():
             if key not in config.keys_api_change_allowed:
                 continue
             is_pending = key in config.pending_changes

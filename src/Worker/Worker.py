@@ -15,6 +15,8 @@ class Worker(object):
         self.key = None
         self.running = False
         self.thread = None
+        self.num_downloaded = 0
+        self.num_failed = 0
 
     def __str__(self):
         return "Worker %s %s" % (self.manager.site.address_short, self.key)
@@ -32,7 +34,8 @@ class Worker(object):
                 time.sleep(0.1)  # Wait a bit for new tasks
                 task = self.manager.getTask(self.peer)
                 if not task:  # Still no task, stop it
-                    self.manager.log.debug("%s: No task found, stopping" % self.key)
+                    stats = "downloaded files: %s, failed: %s" % (self.num_downloaded, self.num_failed)
+                    self.manager.log.debug("%s: No task found, stopping (%s)" % (self.key, stats))
                     break
             if not task["time_started"]:
                 task["time_started"] = time.time()  # Task started now
@@ -78,10 +81,12 @@ class Worker(object):
             self.task = task
             site = task["site"]
             task["workers_num"] += 1
+            error_message = "Unknown error"
             try:
                 buff = self.peer.getFile(site.address, task["inner_path"], task["size"])
-            except Exception, err:
+            except Exception as err:
                 self.manager.log.debug("%s: getFile error: %s" % (self.key, err))
+                error_message = str(err)
                 buff = None
             if self.running is False:  # Worker no longer needed or got killed
                 self.manager.log.debug("%s: No longer needed, returning: %s" % (self.key, task["inner_path"]))
@@ -91,13 +96,15 @@ class Worker(object):
             if buff:  # Download ok
                 try:
                     correct = site.content_manager.verifyFile(task["inner_path"], buff)
-                except Exception, err:
+                except Exception as err:
+                    error_message = str(err)
                     correct = False
             else:  # Download error
-                err = "Download failed"
+                error_message = "Download failed"
                 correct = False
             if correct is True or correct is None:  # Verify ok or same file
-                self.manager.log.debug("%s: Verify correct: %s" % (self.key, task["inner_path"]))
+                if self.manager.started_task_num < 50 or config.verbose:
+                    self.manager.log.debug("%s: Verify correct: %s" % (self.key, task["inner_path"]))
                 write_error = None
                 if correct is True and task["done"] is False:  # Save if changed and task not done yet
                     buff.seek(0)
@@ -110,15 +117,19 @@ class Worker(object):
                 if task["done"] is False:
                     if write_error:
                         self.manager.failTask(task)
+                        self.num_failed += 1
                     else:
                         self.manager.doneTask(task)
+                        self.num_downloaded += 1
                 task["workers_num"] -= 1
             else:  # Verify failed
+                self.num_failed += 1
                 task["workers_num"] -= 1
-                self.manager.log.debug(
-                    "%s: Verify failed: %s, error: %s, failed peers: %s, workers: %s" %
-                    (self.key, task["inner_path"], err, len(task["failed"]), task["workers_num"])
-                )
+                if self.manager.started_task_num < 50 or config.verbose:
+                    self.manager.log.debug(
+                        "%s: Verify failed: %s, error: %s, failed peers: %s, workers: %s" %
+                        (self.key, task["inner_path"], error_message, len(task["failed"]), task["workers_num"])
+                    )
                 task["failed"].append(self.peer)
                 self.peer.hash_failed += 1
                 if self.peer.hash_failed >= max(len(self.manager.tasks), 3) or self.peer.connection_error > 10:
